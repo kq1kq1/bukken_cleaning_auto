@@ -20,8 +20,8 @@
 
   "web_update": {
     "skyhrs": {
-      "login_url":  "https://sys.arcs.jp/login.html",
-      "search_url": "https://sys.arcs.jp/m-bin/m_object_srch.cgi",
+      "login_url":  "https://YOUR-SKYHRS-LOGIN-URL/",
+      "search_url": "https://YOUR-SKYHRS-SEARCH-URL/",
       "auth_state": "auth_state_skyhrs.json"
     },
     "pitat": {
