@@ -908,7 +908,7 @@ def compare(csv_path: str, cfg: dict) -> dict:
 # ----------------------------------------------------------------
 
 # レポートを保持する日数（これより古いHTMLレポートは自動削除）
-REPORT_KEEP_DAYS = 60
+REPORT_KEEP_DAYS = 14
 
 
 def cleanup_old_reports(keep_days: int = REPORT_KEEP_DAYS) -> int:
