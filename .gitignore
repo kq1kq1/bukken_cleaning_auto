@@ -11,6 +11,10 @@ debug_*.html
 debug_*.png
 test_*.html
 
+# 開発用の診断スクリプト（CSVパス等がハードコード。ローカル専用）
+test_run.py
+test_detail.py
+
 # --- ログ ---
 *.log
 

@@ -45,6 +45,8 @@ cd bukken_cleaning_auto
 ### 2. Python 3.13 をインストール
 [python.org](https://www.python.org/) の Windows インストーラで導入（`tkinter` を含む標準構成でOK）。
 
+> **重要（別マシンで使う場合）**: `.bat` ファイルは Python の絶対パス（`C:\Users\user\AppData\Local\Programs\Python\Python313\python.exe`）をハードコードしています。ユーザー名が違うマシンではこのパスが存在しないため、**インストール時に「Add Python to PATH」にチェック**を入れて `python` をPATHに通してください（その場合 bat は自動でフォールバックして動きます）。または各 `.bat` の `set "PYTHON=..."` 行を自分の環境のパスに書き換えてください。
+
 ### 3. 依存ライブラリをインストール
 ```cmd
 python -m pip install -r requirements.txt
@@ -137,8 +139,8 @@ DB照合の元データ `reins_db.xlsx` は、**別プロジェクト `reins_aut
 | `config.example.json` | 設定テンプレート（コピーして `config.json` を作る） |
 | `実行.bat` | CSV照合（ドラッグ＆ドロップ） |
 | `ログイン設定.bat` | 初回ログインセッション保存 |
-| `確認して更新.bat` | 確認＆自動更新GUIを起動 |
-| `自動更新_確認.bat` / `自動更新_本番.bat` | コマンドからの自動更新（ドライラン／本番） |
+| `確認して更新.bat` | 確認＆自動更新GUIを起動（**本番更新はこの画面から**） |
+| `自動更新_確認.bat` | コマンドからのドライラン（全件、実更新なし） |
 
 ### CLIでの自動更新（GUIを使わない場合）
 ```cmd
