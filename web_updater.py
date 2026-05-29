@@ -159,22 +159,41 @@ def process_skyhrs(context, site_cfg: dict, tasks: list[Task], dry_run: bool,
                     pass
                 task.results[key] = "スキップ:0件(該当なし)"
                 continue
-            if n > 1:
-                task.results[key] = f"スキップ:複数ヒット({n}件)→手動確認"
-                continue
+            # 複数ヒットでも全件まとめて更新する（同一物件の重複掲載が多いため）
+            multi_note = f"(複数{n}件まとめて更新)" if n > 1 else ""
 
             if dry_run:
                 act = "成約に変更" if task.action == "sold" else f"価格→{task.new_price}万円"
-                task.results[key] = f"DRY-RUN: {act}"
+                task.results[key] = f"DRY-RUN: {act}{multi_note}"
+                continue
+
+            # 表示中の全行に対して目標値をセット（既に目標値の行はそのまま）。
+            # スカイヤーズは変更が1つも無いと更新ボタンが反応しないため、
+            # 変更件数(changed)が0ならスキップ扱いにする。
+            changed = 0
+            if task.action == "sold":
+                for i in range(n):
+                    sel = selects.nth(i)
+                    if sel.input_value() != "3":
+                        sel.select_option(value="3")  # 3=成約
+                        changed += 1
+            else:
+                price_inputs = page.locator('input[name^="PRICE_FROM:"]')
+                m = price_inputs.count()
+                tgt = re.sub(r"[^\d]", "", str(task.new_price))
+                for i in range(m):
+                    inp = price_inputs.nth(i)
+                    if re.sub(r"[^\d]", "", str(inp.input_value())) != tgt:
+                        inp.fill(task.new_price)
+                        changed += 1
+
+            if changed == 0:
+                state = "既に成約" if task.action == "sold" else "既に新価格"
+                task.results[key] = f"スキップ:変更不要({state}){multi_note}"
                 continue
 
             # 実更新
             dialog_log.clear()
-            if task.action == "sold":
-                selects.first.select_option(value="3")  # 3=成約
-            else:
-                page.locator('input[name^="PRICE_FROM:"]').first.fill(task.new_price)
-
             dialog_before = len(dialog_log)
             page.click('input[name="bt_regist"]')  # 入力内容で更新
 
@@ -189,7 +208,7 @@ def process_skyhrs(context, site_cfg: dict, tasks: list[Task], dry_run: bool,
                     break
             page.wait_for_timeout(500)  # 残ダイアログの処理を確実に終わらせる
             if ok:
-                task.results[key] = "成功"
+                task.results[key] = f"成功{multi_note}"
             else:
                 task.results[key] = f"失敗:完了未確認(dialog={dialog_log[dialog_before:]})"
 
@@ -216,162 +235,179 @@ def _dump_debug(pg, name: str) -> None:
         pass
 
 
-def _pitat_attempt(context, site_cfg: dict, task: Task, dry_run: bool) -> str:
+def _pitat_search(page, task: Task) -> int:
     """
-    ピタクラで1物件を1回処理する。結果ステータス文字列を返す。
-    毎回ログイン後ページから検索し直す（リトライ時もクリーンに再実行するため）。
-    成功/スキップ/DRY-RUN は確定、'失敗:...' はリトライ対象。
+    共有の検索ページで1物件を検索し、ヒット件数（詳細ボタン数）を返す。
+    検索条件（ラジオ「物件管理番号」+ 取扱店舗「指定しない」）を毎回セットし、
+    検索窓をクリアして管理番号を入力 → Enter。ページは閉じず再利用する。
     """
-    list_url = site_cfg["list_url"]
-    home_url = site_cfg.get("home_url", list_url)
-    page = context.new_page()
-    detail = None
-    try:
-        page.goto(home_url, wait_until="domcontentloaded")
-        page.wait_for_timeout(2000)
-        if "login" in page.url.lower():
-            return "失敗:セッション切れ(要login_setup)"
-        page.goto(list_url, wait_until="domcontentloaded")
+    # 検索条件をセット（再検索時も念のため毎回設定。冪等）
+    page.locator('label:has-text("物件管理番号")').first.click()
+    page.wait_for_timeout(300)
+    page.select_option('select.tenpo-select', value="0")
+    page.wait_for_timeout(300)
 
-        # 検索窓が表示されるまで待つ（SPAなのでnetworkidleは使わない）
+    # 検索窓に入力 → Enter（ラジオ切替でplaceholderが変わるため*入力*で拾う）
+    box = page.locator('input[placeholder*="入力"]').first
+    box.click()
+    box.fill("")
+    box.type(task.kanri_no, delay=30)  # 1文字ずつ（SPA入力検知対策）
+    page.wait_for_timeout(300)
+    logger.info(f"  検索窓入力値='{box.input_value()}'")
+    box.press("Enter")
+    page.wait_for_timeout(3000)
+
+    n = page.locator('button.button-basic:has-text("詳細")').count()
+    logger.info(f"  結果{n}件 / URL={page.url}")
+    return n
+
+
+def _pitat_edit_detail(detail, task: Task) -> str:
+    """
+    詳細（編集）タブで成約 or 価格変更を行い、登録まで完了させる。
+    結果ステータスを返す。タブの開閉は呼び出し側が行う。
+    """
+    # フォーム準備＋入力を最大4回リトライ（編集可能まで時間がかかるため）
+    edited = False
+    for attempt in range(1, 5):
         try:
-            page.wait_for_selector('input[placeholder*="入力"]', timeout=30000)
+            if task.action == "sold":
+                # 販売区分→販売中止（これを選ぶと中止区分が有効化される）
+                detail.wait_for_selector('label:has-text("販売中止")', timeout=5000)
+                detail.locator('label:has-text("販売中止")').first.click()
+                # 「他決」は初期disabled。有効になるまで最大8秒ポーリング（速度非依存）
+                otsu_radio = detail.locator('label:has-text("他決") input[type="radio"]')
+                for _ in range(16):
+                    detail.wait_for_timeout(500)
+                    try:
+                        if not otsu_radio.is_disabled():
+                            break
+                    except Exception:
+                        pass
+                detail.locator('label:has-text("他決")').first.click()
+                detail.wait_for_timeout(300)
+                if not otsu_radio.is_checked():
+                    raise PWTimeout("他決の選択を確認できませんでした")
+            else:
+                # 販売価格欄 = 「価格変更」ボタンと同じ行の text-right 入力
+                price_btn = detail.locator('button:has-text("価格変更")')
+                price_input = detail.locator('div.row').filter(
+                    has=price_btn).locator('input.text-right').first
+                price_input.wait_for(state="visible", timeout=5000)
+                price_input.fill(task.new_price)
+                detail.wait_for_timeout(300)
+            edited = True
+            break
         except PWTimeout:
-            _dump_debug(page, "debug_pitat")
-            return "失敗:検索フォーム未表示(要確認)"
-        page.wait_for_timeout(1000)
+            logger.info(f"  詳細フォーム未準備（試行{attempt}/4）… 2秒待って再試行")
+            detail.wait_for_timeout(2000)
 
-        # 検索条件: ラジオ「物件管理番号」+ 取扱店舗「指定しない」
-        page.locator('label:has-text("物件管理番号")').first.click()
-        page.wait_for_timeout(300)
-        page.select_option('select.tenpo-select', value="0")
-        page.wait_for_timeout(300)
+    if not edited:
+        _dump_debug(detail, "debug_pitat_detail")
+        return "失敗:詳細フォーム未表示(要確認)"
 
-        # 検索窓に入力 → Enter（ラジオ切替でplaceholderが変わるため*入力*で拾う）
-        box = page.locator('input[placeholder*="入力"]').first
-        box.click()
-        box.fill("")
-        box.type(task.kanri_no, delay=30)  # 1文字ずつ（SPA入力検知対策）
-        page.wait_for_timeout(300)
-        logger.info(f"  検索窓入力値='{box.input_value()}'")
-        box.press("Enter")
-        page.wait_for_timeout(3000)
+    # 登録 → 確認ダイアログ「はい」
+    detail.click('button.button-register')
+    detail.wait_for_selector('.el-message-box', timeout=10000)
+    detail.wait_for_timeout(300)
+    detail.click('.el-message-box button.el-button--primary')
 
-        # 検索結果の「詳細」ボタン数で件数判定
-        detail_btns = page.locator('button.button-basic:has-text("詳細")')
-        n = detail_btns.count()
-        logger.info(f"  結果{n}件 / URL={page.url}")
-        if n == 0:
-            _dump_debug(page, "debug_pitat")
-            return "スキップ:0件(該当なし)"
-        if n > 1:
-            return f"スキップ:複数ヒット({n}件)→手動確認"
-
-        if dry_run:
-            return f"DRY-RUN: {'成約に変更' if task.action == 'sold' else f'価格→{task.new_price}万円'}"
-
-        # 詳細ボタン → 新タブ／同一タブ遷移の両方に対応
-        before_pages = len(context.pages)
-        logger.info("  詳細ボタンをクリックします...")
-        detail_btns.first.click()
-        for _ in range(30):
-            page.wait_for_timeout(500)
-            if len(context.pages) > before_pages:
-                detail = context.pages[-1]
-                logger.info(f"  新タブ検出: {detail.url}")
-                break
-        if detail is None:
-            detail = page
-            logger.info(f"  新タブなし。同一タブ遷移: {page.url}")
-
-        # フォーム準備＋入力を最大4回リトライ（新タブは検出済みなのでここだけ粘る）
-        edited = False
-        for attempt in range(1, 5):
-            try:
-                if task.action == "sold":
-                    # 販売区分→販売中止（これを選ぶと中止区分が有効化される）
-                    detail.wait_for_selector('label:has-text("販売中止")', timeout=5000)
-                    detail.locator('label:has-text("販売中止")').first.click()
-                    # 中止区分の「他決」は初期disabled。固定待ちではなく
-                    # 「有効になるまで」最大8秒ポーリングしてからクリック（速度非依存）
-                    otsu_radio = detail.locator('label:has-text("他決") input[type="radio"]')
-                    for _ in range(16):
-                        detail.wait_for_timeout(500)
-                        try:
-                            if not otsu_radio.is_disabled():
-                                break
-                        except Exception:
-                            pass
-                    detail.locator('label:has-text("他決")').first.click()
-                    detail.wait_for_timeout(300)
-                    # 念のため他決が選択されたか確認（未選択ならリトライへ）
-                    if not otsu_radio.is_checked():
-                        raise PWTimeout("他決の選択を確認できませんでした")
-                else:
-                    # 販売価格欄 = 「価格変更」ボタンと同じ行の text-right 入力
-                    # （先頭の text-right は収益区分の disabled 欄なので .first ではダメ）
-                    price_btn = detail.locator('button:has-text("価格変更")')
-                    price_input = detail.locator('div.row').filter(
-                        has=price_btn).locator('input.text-right').first
-                    price_input.wait_for(state="visible", timeout=5000)
-                    price_input.fill(task.new_price)
-                    detail.wait_for_timeout(300)
-                edited = True
-                break
-            except PWTimeout:
-                logger.info(f"  詳細フォーム未準備（試行{attempt}/4）… 2秒待って再試行")
-                detail.wait_for_timeout(2000)
-
-        if not edited:
-            _dump_debug(detail, "debug_pitat_detail")
-            return "失敗:詳細フォーム未表示(要確認)"
-
-        # 登録 → 確認ダイアログ「はい」
-        detail.click('button.button-register')
-        detail.wait_for_selector('.el-message-box', timeout=10000)
-        detail.wait_for_timeout(300)
-        detail.click('.el-message-box button.el-button--primary')
-
-        # 完了メッセージ「登録しました。」が出るまでポーリング
-        ok = False
-        for _ in range(20):
-            detail.wait_for_timeout(500)
-            boxes = detail.locator('.el-message-box__content')
-            if boxes.count():
-                txt = boxes.first.inner_text()
-                if "登録しました" in txt or "完了" in txt:
-                    ok = True
-                    btn = detail.locator('.el-message-box button.el-button--primary')
-                    if btn.count():
-                        btn.click()
-                    break
+    # 完了メッセージ「登録しました。」が出るまでポーリング
+    ok = False
+    for _ in range(20):
         detail.wait_for_timeout(500)
-        return "成功" if ok else "成功(完了文言未確認)"
+        boxes = detail.locator('.el-message-box__content')
+        if boxes.count():
+            txt = boxes.first.inner_text()
+            if "登録しました" in txt or "完了" in txt:
+                ok = True
+                btn = detail.locator('.el-message-box button.el-button--primary')
+                if btn.count():
+                    btn.click()
+                break
+    detail.wait_for_timeout(500)
+    return "成功" if ok else "成功(完了文言未確認)"
 
+
+def _pitat_one(context, page, task: Task, dry_run: bool) -> str:
+    """
+    共有検索ページ page を使って1物件を処理する。
+    検索 → （実行時）詳細タブを開く → 更新 → 詳細タブを閉じる。
+    検索ページ page は閉じない（次の物件の再検索に使い回す）。
+    """
+    n = _pitat_search(page, task)
+    if n == 0:
+        _dump_debug(page, "debug_pitat")
+        return "スキップ:0件(該当なし)"
+    if n > 1:
+        return f"スキップ:複数ヒット({n}件)→手動確認"
+    if dry_run:
+        return f"DRY-RUN: {'成約に変更' if task.action == 'sold' else f'価格→{task.new_price}万円'}"
+
+    # 「詳細」クリックで新タブが開く。新タブを取得して編集→閉じる
+    detail = None
+    before_pages = len(context.pages)
+    logger.info("  詳細ボタンをクリックします...")
+    page.locator('button.button-basic:has-text("詳細")').first.click()
+    for _ in range(30):
+        page.wait_for_timeout(500)
+        if len(context.pages) > before_pages:
+            detail = context.pages[-1]
+            logger.info(f"  新タブ検出: {detail.url}")
+            break
+    if detail is None:
+        return "失敗:詳細タブが開かない(要確認)"
+
+    try:
+        return _pitat_edit_detail(detail, task)
     finally:
-        # クリーンアップ: 新タブを閉じ、検索用ページも閉じる
+        # 詳細タブだけ閉じる（検索ページは残して再検索に使う）
         try:
-            if detail is not None and detail is not page:
-                detail.close()
-        except Exception:
-            pass
-        try:
-            page.close()
+            detail.close()
         except Exception:
             pass
 
 
 def process_pitat(context, site_cfg: dict, tasks: list[Task], dry_run: bool) -> None:
-    """ピタクラで各タスクを処理する。"""
-    for task in tasks:
-        key = "pitat"
+    """
+    ピタクラで各タスクを処理する。
+    検索ページは1枚だけ開いて使い回し、物件ごとに詳細タブを開閉する。
+    """
+    list_url = site_cfg["list_url"]
+    home_url = site_cfg.get("home_url", list_url)
+    page = context.new_page()
+    try:
+        # 初回のみ: home → 物件一覧 → 検索フォーム表示まで
+        page.goto(home_url, wait_until="domcontentloaded")
+        page.wait_for_timeout(2000)
+        if "login" in page.url.lower():
+            for t in tasks:
+                t.results["pitat"] = "失敗:セッション切れ(要login_setup)"
+            return
+        page.goto(list_url, wait_until="domcontentloaded")
         try:
-            task.results[key] = _pitat_attempt(context, site_cfg, task, dry_run)
+            page.wait_for_selector('input[placeholder*="入力"]', timeout=30000)
         except PWTimeout:
-            task.results[key] = "失敗:タイムアウト"
-        except Exception as e:
-            task.results[key] = f"失敗:{e}"
-            logger.exception(f"pitat {task.kanri_no} でエラー")
+            _dump_debug(page, "debug_pitat")
+            for t in tasks:
+                t.results["pitat"] = "失敗:検索フォーム未表示(要確認)"
+            return
+        page.wait_for_timeout(1000)
+
+        # 各物件を、同じ検索ページで再検索しながら処理
+        for task in tasks:
+            try:
+                task.results["pitat"] = _pitat_one(context, page, task, dry_run)
+            except PWTimeout:
+                task.results["pitat"] = "失敗:タイムアウト"
+            except Exception as e:
+                task.results["pitat"] = f"失敗:{e}"
+                logger.exception(f"pitat {task.kanri_no} でエラー")
+    finally:
+        try:
+            page.close()
+        except Exception:
+            pass
 
 
 # ----------------------------------------------------------------

@@ -303,6 +303,13 @@ def _csv_station_summary(csv_row: dict) -> str:
     return " / ".join(parts[:2])
 
 
+def _db_station_summary(db_row: dict) -> str:
+    """DBの沿線駅＋交通を読みやすい1行に整形（比較表示用）。"""
+    sensen = str(db_row.get("沿線駅", "") or "").strip()
+    kotsuu = str(db_row.get("交通", "") or "").strip()
+    return f"{sensen} {kotsuu}".strip()
+
+
 def _build_csv_stations(csv_row: dict) -> list[tuple]:
     """
     CSV の 交通手段1〜3 から構造化データを生成。
@@ -780,6 +787,20 @@ def compare(csv_path: str, cfg: dict) -> dict:
         kanri_no = cv(csv_row, "物件管理番号")
         eki_info = _csv_station_summary(csv_row)
 
+        def _compare_fields(db_row: dict) -> dict:
+            """CSV側とDB側を並べた比較表示用フィールド（GUI確認画面で使用）。"""
+            return {
+                "csv_建物名":   cv(csv_row, "建物名"),
+                "csv_所在地":   cv(csv_row, "所在地"),
+                "csv_最寄駅":   eki_info,
+                "csv_物件種別": cv(csv_row, "物件種別"),
+                "db_建物名":    str(db_row.get("建物名", "") or ""),
+                "db_所在地":    str(db_row.get("所在地", "") or ""),
+                "db_最寄駅":    _db_station_summary(db_row),
+                "db_会社名":    str(db_row.get("会社名", "") or ""),
+                "db_物件種別":  str(db_row.get("物件種別", "") or ""),
+            }
+
         def _not_in_db_entry():
             return {
                 "物件管理番号": kanri_no,
@@ -808,7 +829,9 @@ def compare(csv_path: str, cfg: dict) -> dict:
                     **db_match,
                     "物件管理番号": kanri_no,
                     "最寄駅":     eki_info,
+                    "action":     "price",
                     "csv_会社名": cv(csv_row, "会社名"),
+                    **_compare_fields(db_match),
                 }
                 if csv_p and db_p and abs(csv_p - db_p) > price_tol:
                     price_changed.append({
@@ -825,7 +848,12 @@ def compare(csv_path: str, cfg: dict) -> dict:
             if arch_match is not None:
                 confirmed_sold.append({
                     **_not_in_db_entry(),
+                    "action":       "sold",
                     "成約・取消日": arch_match.get("成約・取消日", ""),
+                    "csv_会社名":   cv(csv_row, "会社名"),
+                    "csv_価格":     cv(csv_row, "価格"),
+                    "db_価格":      str(arch_match.get("価格", "") or ""),
+                    **_compare_fields(arch_match),
                 })
             else:
                 not_in_db.append(_not_in_db_entry())

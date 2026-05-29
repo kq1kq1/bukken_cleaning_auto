@@ -55,6 +55,119 @@ def send_email(cfg: dict, subject: str, body_html: str) -> bool:
         return False
 
 
+def build_update_result_email(rows: list[dict]) -> tuple[str, str]:
+    """
+    WEB自動更新の実行結果からメール件名・本文(HTML)を生成する。
+
+    rows の各要素（web_updater.Task を辞書化したもの）:
+      kanri_no  - 物件管理番号
+      action    - "sold"(成約) / "price"(価格変更)
+      new_price - 価格変更時の新価格（万円）
+      info      - 物件情報（建物名/所在地/最寄駅/会社名 等の比較フィールド）
+      results   - {"skyhrs": "成功"/..., "pitat": "成功"/...}
+    """
+    now = datetime.now()
+
+    def overall(r: dict) -> str:
+        vals = list(r.get("results", {}).values())
+        if vals and all(v == "成功" for v in vals):
+            return "success"
+        if any(str(v).startswith("失敗") for v in vals):
+            return "fail"
+        return "skip"
+
+    success = [r for r in rows if overall(r) == "success"]
+    fail    = [r for r in rows if overall(r) == "fail"]
+    skip    = [r for r in rows if overall(r) == "skip"]
+
+    parts = []
+    if success: parts.append(f"成功{len(success)}件")
+    if fail:    parts.append(f"失敗{len(fail)}件")
+    if skip:    parts.append(f"スキップ{len(skip)}件")
+    subject = f"[自動更新] {now:%m/%d %H:%M} " + " / ".join(parts or ["対象なし"])
+
+    # イレギュラー（要確認）: 複数件まとめて更新 / 該当なし / 既に変更済み
+    def _is_irregular(r: dict) -> bool:
+        for v in r.get("results", {}).values():
+            s = str(v)
+            if any(k in s for k in ("複数", "0件", "該当なし", "変更不要")):
+                return True
+        return False
+
+    irregular = [r for r in rows if _is_irregular(r)]
+
+    sections = []
+    if irregular:
+        sections.append(_update_section(
+            "⚠️ 要確認（複数件更新・該当なし・既に変更済み など）",
+            irregular, "#7a4f00", "#ff9933", show_price=True,
+            note="自動判定がイレギュラーだった物件です。念のため内容をご確認ください。",
+        ))
+    if fail:
+        sections.append(_update_section("🔴 更新失敗（要手動対応）", fail, "#8b0000", "#cc0000", show_price=True))
+    if success:
+        sections.append(_update_section("🟢 更新成功", success, "#0a5d00", "#33aa33"))
+    if skip:
+        sections.append(_update_section("⚪ スキップ（変更不要・該当なし等）", skip, "#555", "#aaa", show_price=True))
+    if not sections:
+        sections.append("<p style='color:#555'>更新対象がありませんでした。</p>")
+
+    subtitle = (
+        f"対象: {len(rows)}件　|　"
+        f"成功: {len(success)}件　|　失敗: {len(fail)}件　|　スキップ: {len(skip)}件"
+    )
+    body = _html_wrap(
+        title=f"WEB自動更新レポート {now:%Y年%m月%d日 %H:%M}",
+        subtitle=subtitle,
+        content="\n".join(sections),
+    )
+    return subject, body
+
+
+def _update_section(title: str, rows: list[dict], color: str, border: str,
+                    show_price: bool = False, note: str = "") -> str:
+    price_th = f"<th {_TH}>価格</th>" if show_price else ""
+    head = (
+        f"<th {_TH}>管理番号</th><th {_TH}>種別</th><th {_TH}>物件</th>{price_th}"
+        f"<th {_TH}>スカイヤーズ</th><th {_TH}>ピタクラ</th>"
+    )
+    body_rows = ""
+    for r in rows:
+        info = r.get("info", {})
+        is_sold = r.get("action") == "sold"
+        act  = "成約" if is_sold else f"価格変更"
+        name = info.get("csv_建物名") or info.get("建物名") or ""
+        addr = info.get("csv_所在地") or info.get("所在地") or ""
+        eki  = info.get("csv_最寄駅") or info.get("最寄駅") or ""
+        comp = info.get("csv_会社名") or info.get("会社名") or ""
+        res  = r.get("results", {})
+        prop_html = (
+            f"<b>{name}</b><br>"
+            f"<span style='font-size:11px;color:#555'>{addr}<br>{eki}<br>{comp}</span>"
+        )
+        price_td = ""
+        if show_price:
+            if is_sold:
+                price_td = f"<td {_TD_R}>{_fmt_price(info.get('csv_価格',''))}</td>"
+            else:
+                price_td = (
+                    f"<td {_TD_R}>{_fmt_price(info.get('db_価格',''))}"
+                    f" → <b>{_fmt_price(r.get('new_price',''))}</b></td>"
+                )
+        body_rows += (
+            f"<tr><td {_TD}>{r.get('kanri_no','')}</td>"
+            f"<td {_TD}>{act}</td>"
+            f"<td {_TD}>{prop_html}</td>{price_td}"
+            f"<td {_TD}>{res.get('skyhrs','-')}</td>"
+            f"<td {_TD}>{res.get('pitat','-')}</td></tr>"
+        )
+    note_html = f"<p style='font-size:12px;color:#555;margin:4px 0 8px'>{note}</p>" if note else ""
+    return f"""
+<h2 style="color:{color};border-left:4px solid {border};padding-left:10px">{title}　{len(rows)}件</h2>
+{note_html}
+<table {_TABLE}><tr>{head}</tr>{body_rows}</table>"""
+
+
 def build_check_email(result: dict, csv_name: str) -> tuple[str, str]:
     """
     照合結果からメール件名・本文(HTML)を生成する。

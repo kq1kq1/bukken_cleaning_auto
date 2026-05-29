@@ -9,6 +9,7 @@ last_result.json
 reports/
 debug_*.html
 debug_*.png
+test_*.html
 
 # --- ログ ---
 *.log
