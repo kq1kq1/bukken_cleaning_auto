@@ -1,0 +1,24 @@
+# --- 機密情報（絶対にコミットしない） ---
+# ログインセッション（Cookie）
+auth_state_*.json
+# SMTPパスワード・メールアドレスを含む設定
+config.json
+
+# --- 業務データ・個人情報 ---
+last_result.json
+reports/
+debug_*.html
+debug_*.png
+
+# --- ログ ---
+*.log
+
+# --- Python ---
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# --- OS ---
+Thumbs.db
+.DS_Store

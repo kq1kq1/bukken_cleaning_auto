@@ -1,0 +1,33 @@
+{
+  "db_path": "C:/path/to/reins_db.xlsx",
+
+  "matching": {
+    "threshold": 6,
+    "price_diff_tolerance_man": 1
+  },
+
+  "notification": {
+    "email_from":    "you@example.com",
+    "email_to": [
+      "member1@example.com",
+      "member2@example.com"
+    ],
+    "smtp_server":   "smtp.gmail.com",
+    "smtp_port":     587,
+    "smtp_password": "your-gmail-app-password"
+  },
+
+  "web_update": {
+    "skyhrs": {
+      "login_url":  "https://sys.arcs.jp/login.html",
+      "search_url": "https://sys.arcs.jp/m-bin/m_object_srch.cgi",
+      "auth_state": "auth_state_skyhrs.json"
+    },
+    "pitat": {
+      "login_url": "https://www.pitat-cloud.com/login/",
+      "home_url":  "https://buy.pitat-cloud.com/home",
+      "list_url":  "https://buy.pitat-cloud.com/bukken/list",
+      "auth_state": "auth_state_pitat.json"
+    }
+  }
+}
