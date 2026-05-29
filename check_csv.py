@@ -907,11 +907,37 @@ def compare(csv_path: str, cfg: dict) -> dict:
 # HTMLレポート保存
 # ----------------------------------------------------------------
 
+# レポートを保持する日数（これより古いHTMLレポートは自動削除）
+REPORT_KEEP_DAYS = 60
+
+
+def cleanup_old_reports(keep_days: int = REPORT_KEEP_DAYS) -> int:
+    """
+    reports/ 内の古いHTMLレポートを自動削除する（更新日時が keep_days 日より古いもの）。
+    削除した件数を返す。エラーは無視（クリーニング自体で処理を止めない）。
+    """
+    import time
+    cutoff = time.time() - keep_days * 86400
+    removed = 0
+    for f in REPORT_DIR.glob("report_*.html"):
+        try:
+            if f.stat().st_mtime < cutoff:
+                f.unlink()
+                removed += 1
+        except Exception:
+            pass
+    if removed:
+        logger.info(f"古いレポートを削除: {removed}件（{keep_days}日より前）")
+    return removed
+
+
 def save_report(body_html: str, csv_name: str) -> Path:
     ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
     path = REPORT_DIR / f"report_{ts}_{Path(csv_name).stem}.html"
     path.write_text(body_html, encoding="utf-8")
     logger.info(f"レポート保存: {path}")
+    # 古いレポートを自動削除（溜まり続けるのを防ぐ）
+    cleanup_old_reports()
     return path
 
 
