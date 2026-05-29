@@ -3,7 +3,8 @@
 
   "matching": {
     "threshold": 6,
-    "price_diff_tolerance_man": 1
+    "price_diff_tolerance_man": 1,
+    "confirmed_sold_within_days": 10
   },
 
   "notification": {

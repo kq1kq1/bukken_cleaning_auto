@@ -136,6 +136,27 @@ def parse_price(s) -> float | None:
         return None
 
 
+def within_recent_days(date_str, days: int) -> bool:
+    """
+    日付文字列が「実行日からdays日以内」かを判定する。
+    成約・取消日が古い（=前回以前のクリーニングで確定したもの）を除外するために使う。
+    パースできない・空の場合は False（=対象外）。
+    """
+    s = str(date_str).strip()
+    if not s:
+        return False
+    s = unicodedata.normalize("NFKC", s)
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d", "%Y年%m月%d日"):
+        try:
+            d = datetime.strptime(s, fmt).date()
+            delta = (datetime.now().date() - d).days
+            # 未来日のわずかなズレは許容（-2日）、過去はdays日以内
+            return -2 <= delta <= days
+        except ValueError:
+            continue
+    return False
+
+
 def parse_area(s) -> float | None:
     """面積文字列を float（㎡）に変換"""
     n = unicodedata.normalize("NFKC", str(s))
@@ -727,6 +748,9 @@ def compare(csv_path: str, cfg: dict) -> dict:
     """
     db_path    = cfg["db_path"]
     price_tol  = cfg.get("matching", {}).get("price_diff_tolerance_man", 1)
+    # 成約確定の対象にする「成約・取消日」の新しさ（実行日から何日以内か）。
+    # 週1回の作業のため、古い成約記録は誤判定の元になるので既定10日。
+    sold_within_days = cfg.get("matching", {}).get("confirmed_sold_within_days", 10)
     custom_map = load_column_map()
 
     # ── CSV読み込み ───────────────────────────────────────────
@@ -845,7 +869,11 @@ def compare(csv_path: str, cfg: dict) -> dict:
             # 成約・取消シートも確認
             arch_candidates = archive_index.get((tg, ak), [])
             arch_match = _match_in_candidates(csv_row, arch_candidates, tg, cmap)
-            if arch_match is not None:
+            # 成約確定にするのは「成約・取消日が実行日からN日以内」のものだけ。
+            # 古い成約記録（前回以前のクリーニング分）は成約候補に回して手動確認に。
+            if arch_match is not None and within_recent_days(
+                arch_match.get("成約・取消日", ""), sold_within_days
+            ):
                 confirmed_sold.append({
                     **_not_in_db_entry(),
                     "action":       "sold",
