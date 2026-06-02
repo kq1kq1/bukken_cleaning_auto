@@ -11,10 +11,10 @@ check_csv.py が出力した last_result.json を読み込み、
 使い方:
   python web_updater.py                      # ドライラン（既定）。何をするか表示のみ
   python web_updater.py --execute            # 実際に更新を実行
-  python web_updater.py --only HF403592      # 特定の物件番号だけ（複数可: HF1,HF2）
+  python web_updater.py --only HF000000      # 特定の物件番号だけ（複数可: HF1,HF2）
   python web_updater.py --limit 2            # 先頭2件だけ
   python web_updater.py --site skyhrs        # スカイヤーズだけ（既定: both）
-  python web_updater.py --site pitat --only HF403592 --execute
+  python web_updater.py --site pitat --only HF000000 --execute
 
   ※ 初回は login_setup.py でログインセッションを保存しておくこと。
 """
@@ -84,7 +84,7 @@ def build_tasks(result: dict) -> list[Task]:
 
 
 # ----------------------------------------------------------------
-# スカイヤーズ（https://sys.arcs.jp）
+# スカイヤーズ（自社物件管理サイト）
 # ----------------------------------------------------------------
 
 def process_skyhrs(context, site_cfg: dict, tasks: list[Task], dry_run: bool,

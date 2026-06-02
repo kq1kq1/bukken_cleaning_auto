@@ -146,7 +146,7 @@ DB照合の元データ `reins_db.xlsx` は、**別プロジェクト `reins_aut
 ```cmd
 python web_updater.py                         :: ドライラン（既定。実更新なし）
 python web_updater.py --execute               :: 本番実行
-python web_updater.py --only HF403630          :: 特定の物件管理番号だけ（カンマ区切り可）
+python web_updater.py --only HF000000          :: 特定の物件管理番号だけ（カンマ区切り可）
 python web_updater.py --limit 5                :: 先頭5件だけ
 python web_updater.py --site skyhrs            :: スカイヤーズだけ（既定: both）
 python web_updater.py --show                   :: ブラウザを表示（デバッグ）
