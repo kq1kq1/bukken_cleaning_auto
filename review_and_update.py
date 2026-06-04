@@ -36,6 +36,24 @@ CONFIG_PATH = BASE_DIR / "config.json"
 RESULT_PATH = BASE_DIR / "last_result.json"
 
 
+def _area_eq(a: str, b: str) -> bool:
+    """面積文字列の簡易一致判定（整数部一致+小数あり時のみ小数一致）。"""
+    def _parse(s):
+        try:
+            return float(re.sub(r"[^\d.]", "", str(s).replace(",", "")))
+        except Exception:
+            return None
+    va, vb = _parse(a), _parse(b)
+    if va is None or vb is None:
+        return False
+    if int(va) != int(vb):
+        return False
+    da, db_ = va - int(va), vb - int(vb)
+    if da > 0 and db_ > 0:
+        return abs(da - db_) < 0.01
+    return True
+
+
 def fmt_price(s) -> str:
     """価格文字列を「○○万円」に整形（円単位は万円に換算）。"""
     n = re.sub(r"[^\d.]", "", str(s).replace(",", ""))
@@ -137,7 +155,7 @@ class ReviewApp:
             price_txt = f"{fmt_price(it.get('csv_価格',''))} → {fmt_price(it.get('db_価格',''))}"
         tk.Label(head, text=price_txt, fg="#7a4f00").pack(side="right")
 
-        # CSV / DB 比較（2行）
+        # CSV / DB 比較（2行 + 面積1行）
         csv_line = (
             f"CSV: {it.get('csv_建物名','')}｜{it.get('csv_所在地','')}"
             f"｜{it.get('csv_最寄駅','')}｜{it.get('csv_会社名','')}"
@@ -150,6 +168,23 @@ class ReviewApp:
                  font=("Meiryo", 9), fg="#1c4587", wraplength=900).pack(fill="x")
         tk.Label(frame, text=db_line, anchor="w", justify="left",
                  font=("Meiryo", 9), fg="#0a5d00", wraplength=900).pack(fill="x")
+
+        # 面積比較行（土地・建物・専有のうち、データがあるものだけ表示）
+        area_parts = []
+        for label, ck, dk in (
+            ("土地", "csv_土地面積", "db_土地面積"),
+            ("建物", "csv_建物面積", "db_建物面積"),
+            ("専有", "csv_専有面積", "db_専有面積"),
+        ):
+            cv_, dv_ = str(it.get(ck, "") or "").strip(), str(it.get(dk, "") or "").strip()
+            if cv_ or dv_:
+                # 不一致は赤、一致または片方欠損はそのまま
+                same = (cv_ and dv_ and _area_eq(cv_, dv_))
+                marker = "" if same or not (cv_ and dv_) else "  ⚠"
+                area_parts.append(f"{label} CSV={cv_ or '-'}㎡ / DB={dv_ or '-'}㎡{marker}")
+        if area_parts:
+            tk.Label(frame, text="面積: " + "　".join(area_parts), anchor="w", justify="left",
+                     font=("Meiryo", 9), fg="#555").pack(fill="x")
 
     # ---------------- 操作 ----------------
     def select_all(self):

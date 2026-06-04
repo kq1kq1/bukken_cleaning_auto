@@ -606,32 +606,139 @@ def build_db_index(db_records: list[dict]) -> dict[tuple, list[dict]]:
 # マッチングロジック（種別ごとのルール）
 # ----------------------------------------------------------------
 
+def _addr_match(csv_addr: str, db_addr: str) -> bool:
+    """住所（丁目レベル）の一致判定。"""
+    n_csv = normalize(csv_addr)
+    n_db  = normalize(db_addr)
+    return bool(n_csv.startswith(n_db) or n_db in n_csv)
+
+
+def _match_mansion(csv_row, candidates, cv, csv_addr, csv_stations, csv_company):
+    """
+    マンション照合:
+      住所 + 建物名 + 所在階 が一致なら同一住戸。
+      同一住戸を別会社が掲載している場合は CSV会社名と一致する候補を優先。
+    """
+    csv_name  = cv("建物名")
+    csv_floor = cv("所在階")
+    mansion_fallback = None
+
+    for db_row in candidates:
+        if not _addr_match(csv_addr, db_row.get("所在地", "")):
+            continue
+
+        db_name  = db_row.get("建物名", "")
+        db_floor = db_row.get("所在階", "")
+        if csv_name and db_name and not names_match(csv_name, db_name):
+            continue
+        if csv_floor and db_floor and not floor_eq(csv_floor, db_floor):
+            continue
+
+        if csv_name and db_name and csv_floor and db_floor:
+            # 同一住戸候補
+            db_company = db_row.get("会社名", "")
+            if csv_company and db_company:
+                if company_match(csv_company, db_company):
+                    return db_row  # 会社名一致 → 最良マッチ
+                if mansion_fallback is None:
+                    mansion_fallback = db_row
+                continue
+            return db_row  # 会社名データなし → そのまま確定
+        # データ欠損 → 駅+会社名で補完
+        db_sensen = db_row.get("沿線駅", "")
+        db_kotsuu = db_row.get("交通", "")
+        if db_sensen and csv_stations and not station_match(csv_stations, db_sensen, db_kotsuu):
+            continue
+        db_company = db_row.get("会社名", "")
+        if csv_company and db_company and not company_match(csv_company, db_company):
+            continue
+        return db_row
+
+    return mansion_fallback
+
+
+def _match_kodate_tochi(csv_row, candidates, cv, csv_addr, csv_stations, csv_company, tg):
+    """
+    戸建・土地照合（4段階フィルタ）:
+      ① 必須マッチ: 住所(丁目) + 駅(両方データあり時) + 会社名(専任時のみ)
+      ② 土地面積一致でフィルタ
+      ③ 戸建のみ建物面積一致でさらに絞る
+      ④ それでも複数なら最安価格を採用
+
+    多棟現場で号棟ごとの面積が同じケースに対応するため、
+    1件目で打ち切らず候補を集めてから絞り込む。
+    """
+    # ① 必須マッチ
+    primary = []
+    for db_row in candidates:
+        if not _addr_match(csv_addr, db_row.get("所在地", "")):
+            continue
+        db_sensen = db_row.get("沿線駅", "")
+        db_kotsuu = db_row.get("交通", "")
+        if db_sensen and csv_stations and not station_match(csv_stations, db_sensen, db_kotsuu):
+            continue
+        # 取引態様: 一般媒介は会社名不問、それ以外は会社名一致を要求
+        is_ippan = "一般" in str(db_row.get("取引態様", ""))
+        if not is_ippan:
+            db_company = db_row.get("会社名", "")
+            if csv_company and db_company and not company_match(csv_company, db_company):
+                continue
+        primary.append(db_row)
+
+    if not primary:
+        return None
+
+    # ② 土地面積一致でフィルタ
+    csv_land = cv("土地面積")
+    land_matched = [d for d in primary
+                    if land_area_strict_eq(csv_land, d.get("土地面積", ""))]
+    if not land_matched:
+        return None
+    if len(land_matched) == 1:
+        return land_matched[0]
+
+    # ③ 戸建のみ: 建物面積一致でさらに絞る
+    if tg == "kodate":
+        csv_bldg = cv("建物面積")
+        bldg_matched = [d for d in land_matched
+                        if land_area_strict_eq(csv_bldg, d.get("建物面積", ""))]
+        if len(bldg_matched) == 1:
+            return bldg_matched[0]
+        if bldg_matched:
+            land_matched = bldg_matched
+
+    # ④ 最安価格を採用（同一現場の中で安い棟＝CSV側で出している棟）
+    def _price_val(d):
+        p = parse_price(d.get("価格", ""))
+        return p if p is not None else float("inf")
+    return min(land_matched, key=_price_val)
+
+
+def _match_other(csv_row, candidates, cv, csv_addr, csv_stations, csv_company):
+    """その他種別: 住所 + 駅 + 会社名 のシンプルマッチ（既存ロジック準拠）。"""
+    for db_row in candidates:
+        if not _addr_match(csv_addr, db_row.get("所在地", "")):
+            continue
+        db_sensen = db_row.get("沿線駅", "")
+        db_kotsuu = db_row.get("交通", "")
+        if db_sensen and csv_stations and not station_match(csv_stations, db_sensen, db_kotsuu):
+            continue
+        db_company = db_row.get("会社名", "")
+        if csv_company and db_company and not company_match(csv_company, db_company):
+            continue
+        return db_row
+    return None
+
+
 def _match_in_candidates(
     csv_row: dict, candidates: list[dict], tg: str, cmap: dict[str, str]
 ) -> dict | None:
     """
-    候補リスト内でマッチを探す。
+    候補リスト内でマッチを探す（種別ごとに専用ロジックに振り分け）。
 
-    マッチ条件:
-      共通: 住所（丁目レベル）一致 ── 必須
-
-      マンション:
-        - 建物名 一致（両方にデータがある場合は必須）
-        - 所在階 一致（両方にデータがある場合は必須）
-        - 住所 + 建物名 + 所在階 が揃って一致すれば同一住戸確定
-          → 駅・会社名は不問（一般媒介で別社が掲載していても同一住戸のため）
-        - データ不足時は 駅 + 会社名 で補完判定
-
-      戸建て・土地:
-        - 駅名 + 徒歩分数 一致（両方にデータがある場合）
-        - DB の取引態様が「一般媒介」の場合:
-            会社名は不問（複数社が同じ物件を掲載するため）
-            その代わり 土地面積（1の位まで完全一致）で判定
-        - DB の取引態様が「専任媒介/専属専任」の場合:
-            会社名 一致（両方にデータがある場合）
-
-    面積は入力誤りが多いため、原則照合に使用しない。
-    （例外: 戸建・土地の一般媒介時のみ土地面積を使用）
+      マンション → _match_mansion: 住所+建物名+階数+(会社名タイブレーカー)
+      戸建・土地 → _match_kodate_tochi: 4段階フィルタ（住所/駅/会社名→土地→建物→最安）
+      その他    → _match_other: 住所+駅+会社名
     """
     def cv(field: str) -> str:
         col = cmap.get(field)
@@ -641,80 +748,11 @@ def _match_in_candidates(
     csv_stations = _build_csv_stations(csv_row)
     csv_company  = cv("会社名")
 
-    # マンション用のフォールバック: 住所+建物名+階数は一致するが会社名は不一致のDB行。
-    # 同一住戸を別の会社が掲載しているケースで、CSVの会社名と一致する候補を優先する。
-    mansion_fallback = None
-
-    for db_row in candidates:
-        db_addr    = db_row.get("所在地", "")
-        db_sensen  = db_row.get("沿線駅", "")
-        db_kotsuu  = db_row.get("交通", "")
-        db_company = db_row.get("会社名", "")
-        db_torihiki = str(db_row.get("取引態様", ""))
-
-        # 1. 住所（丁目レベル）一致
-        n_csv = normalize(csv_addr)
-        n_db  = normalize(db_addr)
-        if not (n_csv.startswith(n_db) or n_db in n_csv):
-            continue
-
-        if tg == "mansion":
-            csv_name  = cv("建物名")
-            db_name   = db_row.get("建物名", "")
-            csv_floor = cv("所在階")
-            db_floor  = db_row.get("所在階", "")
-
-            # 建物名（両方ある場合は必須）
-            if csv_name and db_name and not names_match(csv_name, db_name):
-                continue
-            # 階数（両方ある場合は必須）
-            if csv_floor and db_floor and not floor_eq(csv_floor, db_floor):
-                continue
-
-            # 建物名 + 階数が両方一致 → 同一住戸候補。会社名で最終判定
-            if csv_name and db_name and csv_floor and db_floor:
-                if csv_company and db_company:
-                    if company_match(csv_company, db_company):
-                        return db_row  # 会社名も一致 → 最良マッチ。即返す
-                    # 会社名不一致は別会社が同じ住戸を掲載しているケース。
-                    # CSVの会社名に一致するDB行が後で見つかる可能性を残し、
-                    # 見つからなければここをフォールバックとして返す
-                    if mansion_fallback is None:
-                        mansion_fallback = db_row
-                    continue
-                # 会社名データなし → そのまま確定
-                return db_row
-            # 片方データ欠損 → 駅・会社名でも確認
-
-        # 2. 駅名 + 徒歩分数（両方にデータがある場合のみ）
-        if db_sensen and csv_stations:
-            if not station_match(csv_stations, db_sensen, db_kotsuu):
-                continue
-
-        # 3. 戸建・土地: 一般媒介なら土地面積、それ以外は会社名で判定
-        if tg in ("kodate", "tochi"):
-            is_ippan = "一般" in db_torihiki
-            if is_ippan:
-                # 一般媒介: 会社名は問わず土地面積で判定
-                if not land_area_strict_eq(cv("土地面積"), db_row.get("土地面積", "")):
-                    continue
-            else:
-                # 専任/専属専任: 会社名で判定（両方にデータがある場合のみ）
-                if csv_company and db_company:
-                    if not company_match(csv_company, db_company):
-                        continue
-        else:
-            # マンション（階数欠損で駅・会社名フォールバックに来た場合）
-            if csv_company and db_company:
-                if not company_match(csv_company, db_company):
-                    continue
-
-        return db_row
-
-    # マンションで会社名一致候補がなければ、会社名不一致のフォールバックを返す
-    if mansion_fallback is not None:
-        return mansion_fallback
-    return None
+    if tg == "mansion":
+        return _match_mansion(csv_row, candidates, cv, csv_addr, csv_stations, csv_company)
+    if tg in ("kodate", "tochi"):
+        return _match_kodate_tochi(csv_row, candidates, cv, csv_addr, csv_stations, csv_company, tg)
+    return _match_other(csv_row, candidates, cv, csv_addr, csv_stations, csv_company)
 
 
 # ----------------------------------------------------------------
@@ -834,11 +872,17 @@ def compare(csv_path: str, cfg: dict) -> dict:
                 "csv_所在地":   cv(csv_row, "所在地"),
                 "csv_最寄駅":   eki_info,
                 "csv_物件種別": cv(csv_row, "物件種別"),
+                "csv_土地面積": cv(csv_row, "土地面積"),
+                "csv_建物面積": cv(csv_row, "建物面積"),
+                "csv_専有面積": cv(csv_row, "専有面積"),
                 "db_建物名":    str(db_row.get("建物名", "") or ""),
                 "db_所在地":    str(db_row.get("所在地", "") or ""),
                 "db_最寄駅":    _db_station_summary(db_row),
                 "db_会社名":    str(db_row.get("会社名", "") or ""),
                 "db_物件種別":  str(db_row.get("物件種別", "") or ""),
+                "db_土地面積":  str(db_row.get("土地面積", "") or ""),
+                "db_建物面積":  str(db_row.get("建物面積", "") or ""),
+                "db_専有面積":  str(db_row.get("専有面積", "") or ""),
             }
 
         def _not_in_db_entry():
