@@ -4,7 +4,8 @@
   "matching": {
     "threshold": 6,
     "price_diff_tolerance_man": 1,
-    "confirmed_sold_within_days": 10
+    "confirmed_sold_within_days": 10,
+    "review_print_per_page": 10
   },
 
   "notification": {

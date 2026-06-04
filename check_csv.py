@@ -1001,6 +1001,137 @@ def save_report(body_html: str, csv_name: str) -> Path:
     return path
 
 
+# 要確認物件の印刷用HTMLで1ページあたり何件を表示するか（既定10件）
+REVIEW_PRINT_PER_PAGE = 10
+
+
+def _print_fmt_price(s) -> str:
+    """価格文字列を「○○万円」に整形（印刷HTML用の軽量版）。"""
+    n = re.sub(r"[^\d.]", "", str(s).replace(",", ""))
+    if not n:
+        return "-"
+    try:
+        v = float(n)
+        if v >= 10_000_000:
+            v /= 10_000
+        return f"{v:,.0f}万円"
+    except ValueError:
+        return str(s)
+
+
+def save_print_review(result: dict, csv_name: str,
+                      per_page: int = REVIEW_PRINT_PER_PAGE) -> Path | None:
+    """
+    要確認物件（成約候補 = DBにもなく成約・取消にも無いCSV物件）を
+    印刷用HTMLとして保存する。 1ページあたり per_page 件で改ページ。
+    複数人で分担して目視確認するための紙印刷を想定。
+    """
+    items = result.get("not_in_db", []) or []
+    if not items:
+        return None
+
+    total = len(items)
+    n_pages = (total + per_page - 1) // per_page
+    now = datetime.now()
+
+    rows_html = []
+    for i, p in enumerate(items, start=1):
+        # 1〜per_page 件目は1ページ目、per_page+1〜2*per_page 件目は2ページ目…
+        page_break_css = "page-break-before:always;" if (i > 1 and (i - 1) % per_page == 0) else ""
+        page_no = (i - 1) // per_page + 1
+
+        name    = p.get("建物名", "") or "(建物名なし)"
+        addr    = p.get("所在地", "") or "-"
+        eki     = p.get("最寄駅", "") or "-"
+        company = p.get("会社名", "") or "-"
+        kanri   = p.get("物件管理番号", "") or "-"
+        kind    = p.get("物件種別", "") or "-"
+        floor   = p.get("所在階", "")
+        price   = p.get("価格", "")
+        land    = p.get("土地面積", "")
+        bldg    = p.get("建物面積", "")
+        senyu   = p.get("専有面積", "")
+
+        areas = []
+        if str(land).strip():  areas.append(f"土地 {land}㎡")
+        if str(bldg).strip():  areas.append(f"建物 {bldg}㎡")
+        if str(senyu).strip(): areas.append(f"専有 {senyu}㎡")
+        area_str = " ／ ".join(areas) if areas else "-"
+
+        floor_str = f"　階数: {floor}" if str(floor).strip() else ""
+
+        rows_html.append(f"""
+<div class="item" style="{page_break_css}">
+  <div class="row1">
+    <span class="num">{i}/{total}</span>
+    <span class="kanri">{kanri}</span>
+    <span class="kind">{kind}{floor_str}</span>
+    <span class="price">{_print_fmt_price(price)}</span>
+    <span class="check">□ 確認済み</span>
+  </div>
+  <div class="row2"><b>{name}</b></div>
+  <div class="row3"><span class="lbl">住所:</span> {addr}</div>
+  <div class="row4"><span class="lbl">駅:</span> {eki}</div>
+  <div class="row5"><span class="lbl">会社:</span> {company}</div>
+  <div class="row6"><span class="lbl">面積:</span> {area_str}</div>
+</div>""")
+
+    html = f"""<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>要確認物件 {total}件 ({n_pages}ページ)</title>
+<style>
+  @page {{ size: A4 portrait; margin: 10mm; }}
+  body {{
+    font-family: "Meiryo","Hiragino Sans",sans-serif;
+    color: #222; font-size: 11px; margin: 0; padding: 8px;
+  }}
+  .header {{
+    background:#1c4587; color:white; padding:8px 12px;
+    font-size:13px; font-weight:bold; border-radius:4px;
+    margin-bottom:10px;
+  }}
+  .summary {{ font-size:11px; color:#555; margin-bottom:6px; }}
+  .item {{
+    border: 1px solid #888; padding: 6px 10px; margin-bottom: 6px;
+    page-break-inside: avoid; border-radius: 3px;
+  }}
+  .item .row1 {{
+    display:flex; gap:10px; align-items:center;
+    font-weight:bold; margin-bottom:3px;
+    border-bottom: 1px solid #ddd; padding-bottom: 2px;
+  }}
+  .item .num   {{ color: #1c4587; min-width: 60px; }}
+  .item .kanri {{ color: #333; min-width: 90px; }}
+  .item .kind  {{ color: #7a4f00; flex-grow: 1; }}
+  .item .price {{ color: #cc0000; font-size: 12px; }}
+  .item .check {{ color: #888; font-weight: normal; font-size: 10px; min-width: 80px; text-align: right; }}
+  .item .row2, .item .row3, .item .row4, .item .row5, .item .row6 {{ margin: 1px 0; }}
+  .lbl {{ color: #555; min-width: 36px; display: inline-block; }}
+  @media print {{
+    .header {{ -webkit-print-color-adjust:exact; print-color-adjust:exact; }}
+    .item {{ page-break-inside: avoid; }}
+  }}
+</style>
+</head>
+<body>
+<div class="header">要確認物件（成約候補） 全 {total} 件 / {n_pages} ページ（1ページ {per_page} 件区切り）</div>
+<div class="summary">
+  作成日時: {now:%Y-%m-%d %H:%M}　|　対象CSV: {Path(csv_name).name}<br>
+  REINS DBにも成約・取消シートにも見つからなかった物件です。担当者で分担して目視確認してください。
+</div>
+{"".join(rows_html)}
+</body>
+</html>"""
+
+    ts   = now.strftime("%Y%m%d_%H%M%S")
+    path = REPORT_DIR / f"print_review_{ts}_{Path(csv_name).stem}.html"
+    path.write_text(html, encoding="utf-8")
+    logger.info(f"印刷用ページ保存: {path}（{n_pages}ページ / {total}件）")
+    return path
+
+
 # 最新の照合結果（WEB自動更新ツールが読み込む）の保存先
 LAST_RESULT_PATH = BASE_DIR / "last_result.json"
 
@@ -1068,6 +1199,13 @@ def main() -> None:
         save_result_json(result, csv_path)
     except Exception:
         logger.exception("照合結果JSONの保存に失敗しました（処理は継続）")
+
+    # 要確認物件（成約候補）の印刷用HTMLを保存（10件/ページ、担当分担用）
+    try:
+        per_page = cfg.get("matching", {}).get("review_print_per_page", REVIEW_PRINT_PER_PAGE)
+        save_print_review(result, csv_path, per_page=per_page)
+    except Exception:
+        logger.exception("印刷用ページの保存に失敗しました（処理は継続）")
 
     if result["unmapped_fields"]:
         msg = (
