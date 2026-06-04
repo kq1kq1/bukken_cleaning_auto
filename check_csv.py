@@ -641,6 +641,10 @@ def _match_in_candidates(
     csv_stations = _build_csv_stations(csv_row)
     csv_company  = cv("会社名")
 
+    # マンション用のフォールバック: 住所+建物名+階数は一致するが会社名は不一致のDB行。
+    # 同一住戸を別の会社が掲載しているケースで、CSVの会社名と一致する候補を優先する。
+    mansion_fallback = None
+
     for db_row in candidates:
         db_addr    = db_row.get("所在地", "")
         db_sensen  = db_row.get("沿線駅", "")
@@ -667,9 +671,18 @@ def _match_in_candidates(
             if csv_floor and db_floor and not floor_eq(csv_floor, db_floor):
                 continue
 
-            # 建物名 + 階数が両方一致確認できた → 同一住戸確定
-            # （一般媒介で別社掲載のケースに対応するため駅・会社名は問わない）
+            # 建物名 + 階数が両方一致 → 同一住戸候補。会社名で最終判定
             if csv_name and db_name and csv_floor and db_floor:
+                if csv_company and db_company:
+                    if company_match(csv_company, db_company):
+                        return db_row  # 会社名も一致 → 最良マッチ。即返す
+                    # 会社名不一致は別会社が同じ住戸を掲載しているケース。
+                    # CSVの会社名に一致するDB行が後で見つかる可能性を残し、
+                    # 見つからなければここをフォールバックとして返す
+                    if mansion_fallback is None:
+                        mansion_fallback = db_row
+                    continue
+                # 会社名データなし → そのまま確定
                 return db_row
             # 片方データ欠損 → 駅・会社名でも確認
 
@@ -698,6 +711,9 @@ def _match_in_candidates(
 
         return db_row
 
+    # マンションで会社名一致候補がなければ、会社名不一致のフォールバックを返す
+    if mansion_fallback is not None:
+        return mansion_fallback
     return None
 
 

@@ -78,8 +78,9 @@ def build_tasks(result: dict) -> list[Task]:
         no = str(p.get("物件管理番号", "")).strip()
         if not no:
             continue
+        # 新価格は DB側=REINSで更新された価格（CSV側=現サイト価格は更新の旧値）
         tasks.append(Task(kanri_no=no, action="price",
-                          new_price=str(p.get("csv_価格", "")).strip(), info=p))
+                          new_price=str(p.get("db_価格", "")).strip(), info=p))
     return tasks
 
 

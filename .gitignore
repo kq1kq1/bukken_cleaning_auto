@@ -7,6 +7,7 @@ config.json
 # --- 業務データ・個人情報 ---
 last_result.json
 reports/
+update_results_*.csv
 debug_*.html
 debug_*.png
 test_*.html

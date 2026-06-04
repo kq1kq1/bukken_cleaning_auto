@@ -130,11 +130,11 @@ class ReviewApp:
                  font=("Meiryo", 9, "bold"), padx=6).pack(side="left", padx=(0, 6))
         tk.Label(head, text=it.get("物件管理番号", ""), font=("Meiryo", 10, "bold")).pack(side="left")
 
-        # 価格表示
+        # 価格表示（現サイト価格(CSV) → 新REINS価格(DB) の方向で更新する）
         if is_sold:
             price_txt = f"成約日: {it.get('成約・取消日', '')}"
         else:
-            price_txt = f"{fmt_price(it.get('db_価格',''))} → {fmt_price(it.get('csv_価格',''))}"
+            price_txt = f"{fmt_price(it.get('csv_価格',''))} → {fmt_price(it.get('db_価格',''))}"
         tk.Label(head, text=price_txt, fg="#7a4f00").pack(side="right")
 
         # CSV / DB 比較（2行）
@@ -222,6 +222,13 @@ class ReviewApp:
         ng = sum(1 for t in tasks if any(str(v).startswith("失敗") for v in t.results.values()))
         sk = len(tasks) - ok - ng
         self.status.config(text=f"完了: 成功{ok} / 失敗{ng} / スキップ{sk}", fg="#0a5d00")
+
+        # 個別結果をログとCSVに書き出し（次回以降の集計・原因分析用）
+        try:
+            self._dump_results(tasks, dry_run)
+        except Exception:
+            pass
+
         lines = []
         for t in tasks:
             name = t.info.get("csv_建物名") or t.info.get("建物名") or ""
@@ -231,6 +238,35 @@ class ReviewApp:
             "ドライラン完了" if dry_run else "実行完了",
             f"成功{ok} / 失敗{ng} / スキップ{sk}{mail_note}\n\n" + "\n\n".join(lines[:30]),
         )
+
+    def _dump_results(self, tasks, dry_run: bool):
+        """個別結果を web_updater.log にINFOで出し、update_results_*.csv にも書き出す。"""
+        import logging, csv as _csv
+        from datetime import datetime as _dt
+        wlogger = logging.getLogger("web_updater")
+        wlogger.info(f"===== GUI実行結果 ({'DRY-RUN' if dry_run else '本番'}) {len(tasks)}件 =====")
+        for t in tasks:
+            name = t.info.get("csv_建物名") or t.info.get("建物名") or ""
+            wlogger.info(f"  [{t.kanri_no}] {t.action} {name[:30]}"
+                         f" / skyhrs={t.results.get('skyhrs','-')}"
+                         f" / pitat={t.results.get('pitat','-')}")
+        ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+        out = BASE_DIR / f"update_results_{ts}.csv"
+        with open(out, "w", encoding="utf-8-sig", newline="") as f:
+            w = _csv.writer(f)
+            w.writerow(["物件管理番号","action","建物名","所在地","会社名(CSV)","現サイト価格","新REINS価格","skyhrs結果","pitat結果"])
+            for t in tasks:
+                w.writerow([
+                    t.kanri_no, t.action,
+                    t.info.get("csv_建物名","") or t.info.get("建物名",""),
+                    t.info.get("csv_所在地","") or t.info.get("所在地",""),
+                    t.info.get("csv_会社名","") or t.info.get("会社名",""),
+                    t.info.get("csv_価格",""),
+                    t.info.get("db_価格",""),
+                    t.results.get("skyhrs","-"),
+                    t.results.get("pitat","-"),
+                ])
+        wlogger.info(f"集計CSV出力: {out}")
 
     def _error(self, msg: str):
         self.running = False

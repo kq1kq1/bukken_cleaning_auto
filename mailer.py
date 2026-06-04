@@ -150,8 +150,9 @@ def _update_section(title: str, rows: list[dict], color: str, border: str,
             if is_sold:
                 price_td = f"<td {_TD_R}>{_fmt_price(info.get('csv_価格',''))}</td>"
             else:
+                # 現サイト価格(csv) → 新価格(new_price=db) の方向
                 price_td = (
-                    f"<td {_TD_R}>{_fmt_price(info.get('db_価格',''))}"
+                    f"<td {_TD_R}>{_fmt_price(info.get('csv_価格',''))}"
                     f" → <b>{_fmt_price(r.get('new_price',''))}</b></td>"
                 )
         body_rows += (
@@ -268,12 +269,12 @@ def _section(title: str, props: list[dict], color: str, border: str,
 
 
 def _section_price_changed(props: list[dict]) -> str:
-    note = "CSVの価格とREINS DBの価格が異なります。どちらが正しいか確認してください。"
+    note = "現サイト価格(CSV)とREINS新価格(DB)が異なります。自動更新でサイトをREINSの新価格に揃えます。"
     note_html = f"<p style='font-size:12px;color:#555;margin:4px 0 8px'>{note}</p>"
     rows = ""
     for p in props:
-        csv_p    = p.get("csv_価格", "")
-        db_p     = p.get("db_価格", "")
+        csv_p    = p.get("csv_価格", "")  # 現サイト価格
+        db_p     = p.get("db_価格", "")   # 新REINS価格（=更新目標）
         db_comp  = p.get("会社名", "")
         csv_comp = p.get("csv_会社名", "")
         comp_html = _comp_cell(db_comp, csv_comp)
@@ -283,12 +284,12 @@ def _section_price_changed(props: list[dict]) -> str:
   <td {_TD}>{p.get('所在地', '')}</td>
   <td {_TD}>{comp_html}</td>
   <td {_TD}>{p.get('物件種別', '')}</td>
-  <td {_TD_R}>{_fmt_price(db_p)}</td>
-  <td {_TD_R}><b>{_fmt_price(csv_p)}</b> {_arrow(db_p, csv_p)}</td>
+  <td {_TD_R}>{_fmt_price(csv_p)}</td>
+  <td {_TD_R}><b>{_fmt_price(db_p)}</b> {_arrow(csv_p, db_p)}</td>
 </tr>"""
     header = (
         f"<th {_TH}>建物名</th><th {_TH}>所在地</th><th {_TH}>会社名（DB / CSV）</th>"
-        f"<th {_TH}>種別</th><th {_TH}>REINS価格</th><th {_TH}>CSV価格（新）</th>"
+        f"<th {_TH}>種別</th><th {_TH}>現サイト価格</th><th {_TH}>新REINS価格（目標）</th>"
     )
     return f"""
 <h2 style="color:#7a4f00;border-left:4px solid #e6ac00;padding-left:10px">💰 価格変更　{len(props)}件</h2>
