@@ -78,9 +78,43 @@ def html_to_pdf(html_path: Path, pdf_path: Path, monochrome: bool = True) -> Non
         browser.close()
 
 
-def send_to_default_printer(pdf_path: Path) -> None:
-    """OS の print verb で既定プリンタに送信する（Windows）。"""
+def _find_sumatrapdf() -> Path | None:
+    """SumatraPDF.exe のインストール場所を探す。見つからなければ None。"""
+    candidates = [
+        Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "SumatraPDF" / "SumatraPDF.exe",
+        Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "SumatraPDF" / "SumatraPDF.exe",
+        Path(os.environ.get("LOCALAPPDATA", "")) / "SumatraPDF" / "SumatraPDF.exe",
+        BASE_DIR / "SumatraPDF.exe",  # 同梱した場合
+    ]
+    for p in candidates:
+        if p.exists():
+            return p
+    return None
+
+
+def send_to_default_printer(pdf_path: Path, force_a4: bool = True, monochrome: bool = True) -> str:
+    """
+    既定プリンタへPDFを送信する。SumatraPDF があれば用紙サイズと白黒を強制指定。
+    無ければ OS の print verb でフォールバック（プリンタの既定用紙設定が使われる）。
+    戻り値: 使用した送信方法（"sumatra" / "os.startfile"）。
+    """
+    sumatra = _find_sumatrapdf()
+    if sumatra:
+        settings = []
+        if force_a4:
+            settings.append("paper=A4")
+        if monochrome:
+            settings.append("monochrome")
+        cmd = [str(sumatra), "-print-to-default", "-silent"]
+        if settings:
+            cmd.extend(["-print-settings", ",".join(settings)])
+        cmd.append(str(pdf_path))
+        import subprocess
+        subprocess.run(cmd, check=False)
+        return "sumatra"
+    # フォールバック: プリンタ既定設定が使われる
     os.startfile(str(pdf_path), "print")
+    return "os.startfile"
 
 
 def main() -> int:
@@ -99,8 +133,15 @@ def main() -> int:
         return 2
 
     try:
-        send_to_default_printer(pdf)
-        logger.info(f"既定プリンタへ送信しました: {pdf.name}")
+        method = send_to_default_printer(pdf, force_a4=True, monochrome=True)
+        if method == "sumatra":
+            logger.info(f"SumatraPDFで既定プリンタへ送信（A4・モノクロ強制）: {pdf.name}")
+        else:
+            logger.info(f"OS既定で既定プリンタへ送信（用紙はプリンタ設定に従う）: {pdf.name}")
+            logger.warning(
+                "A4で印刷するには既定プリンタの用紙設定をA4にするか、"
+                "SumatraPDFをインストールしてください（https://www.sumatrapdfreader.org/）。"
+            )
     except Exception as e:
         logger.exception(f"印刷送信失敗: {e}")
         return 3

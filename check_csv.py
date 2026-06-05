@@ -1062,18 +1062,16 @@ def save_print_review(result: dict, csv_name: str,
 
         rows_html.append(f"""
 <div class="item" style="{page_break_css}">
-  <div class="row1">
+  <div class="r1">
     <span class="num">{i}/{total}</span>
     <span class="kanri">{kanri}</span>
     <span class="kind">{kind}{floor_str}</span>
     <span class="price">{_print_fmt_price(price)}</span>
     <span class="check">□ 確認済み</span>
   </div>
-  <div class="row2"><b>{name}</b></div>
-  <div class="row3"><span class="lbl">住所:</span> {addr}</div>
-  <div class="row4"><span class="lbl">駅:</span> {eki}</div>
-  <div class="row5"><span class="lbl">会社:</span> {company}</div>
-  <div class="row6"><span class="lbl">面積:</span> {area_str}</div>
+  <div class="r2"><b>{name}</b></div>
+  <div class="r3"><span class="lbl">住所:</span>{addr}　<span class="lbl">最寄:</span>{eki}</div>
+  <div class="r4"><span class="lbl">会社:</span>{company}　<span class="lbl">面積:</span>{area_str}</div>
 </div>""")
 
     html = f"""<!DOCTYPE html>
@@ -1085,30 +1083,33 @@ def save_print_review(result: dict, csv_name: str,
   @page {{ size: A4 portrait; margin: 10mm; }}
   body {{
     font-family: "Meiryo","Hiragino Sans",sans-serif;
-    color: #222; font-size: 11px; margin: 0; padding: 8px;
+    color: #222; font-size: 10px; margin: 0; padding: 4px;
+    line-height: 1.25;
   }}
   .header {{
-    background:#1c4587; color:white; padding:8px 12px;
-    font-size:13px; font-weight:bold; border-radius:4px;
-    margin-bottom:10px;
+    background:#1c4587; color:white; padding:4px 10px;
+    font-size:12px; font-weight:bold; border-radius:3px;
+    margin-bottom:4px;
   }}
-  .summary {{ font-size:11px; color:#555; margin-bottom:6px; }}
+  .summary {{ font-size:9px; color:#555; margin-bottom:4px; line-height:1.2; }}
   .item {{
-    border: 1px solid #888; padding: 6px 10px; margin-bottom: 6px;
-    page-break-inside: avoid; border-radius: 3px;
+    border: 1px solid #888; padding: 3px 8px; margin-bottom: 3px;
+    page-break-inside: avoid; border-radius: 2px;
   }}
-  .item .row1 {{
-    display:flex; gap:10px; align-items:center;
-    font-weight:bold; margin-bottom:3px;
-    border-bottom: 1px solid #ddd; padding-bottom: 2px;
+  .item .r1 {{
+    display:flex; gap:8px; align-items:center;
+    font-weight:bold; margin-bottom:1px;
+    border-bottom: 1px solid #eee; padding-bottom: 1px;
+    font-size: 10px;
   }}
-  .item .num   {{ color: #1c4587; min-width: 60px; }}
-  .item .kanri {{ color: #333; min-width: 90px; }}
+  .item .num   {{ color: #1c4587; min-width: 50px; }}
+  .item .kanri {{ color: #333; min-width: 85px; }}
   .item .kind  {{ color: #7a4f00; flex-grow: 1; }}
-  .item .price {{ color: #cc0000; font-size: 12px; }}
-  .item .check {{ color: #888; font-weight: normal; font-size: 10px; min-width: 80px; text-align: right; }}
-  .item .row2, .item .row3, .item .row4, .item .row5, .item .row6 {{ margin: 1px 0; }}
-  .lbl {{ color: #555; min-width: 36px; display: inline-block; }}
+  .item .price {{ color: #cc0000; font-size: 11px; }}
+  .item .check {{ color: #888; font-weight: normal; font-size: 9px; min-width: 70px; text-align: right; }}
+  .item .r2, .item .r3, .item .r4 {{ margin: 0; font-size: 10px; }}
+  .item .r2 {{ font-size: 11px; }}
+  .lbl {{ color: #555; }}
   @media print {{
     .header {{ -webkit-print-color-adjust:exact; print-color-adjust:exact; }}
     .item {{ page-break-inside: avoid; }}

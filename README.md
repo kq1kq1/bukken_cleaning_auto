@@ -170,8 +170,10 @@ CSVの列名が自動検出できない場合、`column_map.json` の右辺をCS
 - **処理時間の目安**: 自動更新は1件ずつ直列で処理します。特にピタクラはページのロードが遅く、1件あたり数秒〜十数秒かかります。**対象が100件を超える日は、2サイト合わせて30〜40分程度**かかることがあります（途中でブラウザを閉じないでください）。件数が多い日は時間に余裕を持って実行してください。
 - `reports/` のHTMLレポートは **14日より古いものを自動削除**します（`check_csv.py` の `REPORT_KEEP_DAYS` で変更可）。
 - **印刷用ページ（分担用）**: 照合実行時に `reports/print_review_*.html` を自動生成します。要確認物件（成約候補）を **1ページ10件区切り**で並べたA4縦のHTMLで、ブラウザで開いて `Ctrl+P` で印刷すると改ページされます。件数を変えたい場合は `config.json` の `matching.review_print_per_page` を編集してください（既定10件）。
-- **自動印刷（A4・モノクロ）**: `印刷.bat` をダブルクリックすると、最新の `print_review_*.html` を PDF（A4・グレースケール）に変換して**Windowsの既定プリンタ**へ送信します。CSSグレースケールフィルタ適用でカラープリンタでもモノクロ出力されます。<br>
-  実行.bat 後に自動で印刷したい場合は、`config.json` の `auto_print_review_after_match` を `true` にしてください（既定 false）。
+- **自動印刷（A4・モノクロ）**: `印刷.bat` をダブルクリックすると、最新の `print_review_*.html` を PDF（A4・グレースケール）に変換して**Windowsの既定プリンタ**へ送信します。<br>
+  - **用紙サイズの注意**: Windowsの標準印刷ではプリンタ既定の用紙設定が優先されます（B4既定だとB4で出る）。**A4を強制したい場合は [SumatraPDF](https://www.sumatrapdfreader.org/) を入れてください**（無料・軽量、約20MB）。自動で検出して `-print-settings "paper=A4,monochrome"` を付けて呼び出します。<br>
+  - SumatraPDFを入れない場合は、**Windows の「デバイスとプリンター」で既定プリンタを A4 モノクロにしておく**のが手軽です。<br>
+  - 実行.bat 後に自動で印刷したい場合は、`config.json` の `auto_print_review_after_match` を `true` にしてください（既定 false）。
 
 ---
 
