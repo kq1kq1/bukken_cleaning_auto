@@ -1207,6 +1207,18 @@ def main() -> None:
     except Exception:
         logger.exception("印刷用ページの保存に失敗しました（処理は継続）")
 
+    # 自動印刷（既定OFF。configで auto_print_review_after_match=true にすると有効）
+    if cfg.get("auto_print_review_after_match", False):
+        try:
+            import subprocess
+            subprocess.Popen(
+                [sys.executable, str(BASE_DIR / "print_review.py")],
+                cwd=str(BASE_DIR),
+            )
+            logger.info("自動印刷を起動しました（print_review.py）")
+        except Exception:
+            logger.exception("自動印刷の起動に失敗（処理は継続）")
+
     if result["unmapped_fields"]:
         msg = (
             f"以下の重要フィールドがCSVで検出できませんでした:\n"

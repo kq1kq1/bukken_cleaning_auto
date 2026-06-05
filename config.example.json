@@ -8,6 +8,8 @@
     "review_print_per_page": 10
   },
 
+  "auto_print_review_after_match": false,
+
   "notification": {
     "email_from":    "you@example.com",
     "email_to": [
