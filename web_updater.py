@@ -335,19 +335,37 @@ def _pitat_search(page, task: Task) -> int:
     """
     # 検索条件をセット（再検索時も念のため毎回設定。冪等）
     page.locator('label:has-text("物件管理番号")').first.click()
-    page.wait_for_timeout(300)
+    page.wait_for_timeout(100)
     page.select_option('select.tenpo-select', value="0")
-    page.wait_for_timeout(300)
+    page.wait_for_timeout(100)
 
     # 検索窓に入力 → Enter（ラジオ切替でplaceholderが変わるため*入力*で拾う）
     box = page.locator('input[placeholder*="入力"]').first
     box.click()
     box.fill("")
-    box.type(task.kanri_no, delay=30)  # 1文字ずつ（SPA入力検知対策）
-    page.wait_for_timeout(300)
+    box.type(task.kanri_no, delay=20)  # 1文字ずつ（SPA入力検知対策）
+    # 入力値が反映されるまで100msポーリング
+    for _ in range(15):
+        if box.input_value().strip() == task.kanri_no:
+            break
+        page.wait_for_timeout(100)
     logger.info(f"  検索窓入力値='{box.input_value()}'")
     box.press("Enter")
-    page.wait_for_timeout(3000)
+
+    # 検索結果（詳細ボタン or 「該当なし」表示）が出るまで200msポーリング
+    # URLが list-building に切り替わる + 結果がレンダリングされる
+    list_url_seen = False
+    for _ in range(30):  # 最大6秒
+        page.wait_for_timeout(200)
+        if "list-building" in page.url:
+            list_url_seen = True
+            # URL切替後、結果か0件メッセージのどちらかが出るまでもう少し待つ
+            if page.locator('button.button-basic:has-text("詳細")').count() > 0:
+                break
+            # 0件の場合 result-area などに「該当なし」的テキストが出るが
+            # 確実に判定するため、URL切替後 800ms 待って件数確定
+            page.wait_for_timeout(800)
+            break
 
     n = page.locator('button.button-basic:has-text("詳細")').count()
     logger.info(f"  結果{n}件 / URL={page.url}")
@@ -367,17 +385,21 @@ def _pitat_edit_detail(detail, task: Task) -> str:
                 # 販売区分→販売中止（これを選ぶと中止区分が有効化される）
                 detail.wait_for_selector('label:has-text("販売中止")', timeout=5000)
                 detail.locator('label:has-text("販売中止")').first.click()
-                # 「他決」は初期disabled。有効になるまで最大8秒ポーリング（速度非依存）
+                # 「他決」は初期disabled。有効になった瞬間に押す（200msポーリング）
                 otsu_radio = detail.locator('label:has-text("他決") input[type="radio"]')
-                for _ in range(16):
-                    detail.wait_for_timeout(500)
+                for _ in range(40):  # 最大8秒
                     try:
                         if not otsu_radio.is_disabled():
                             break
                     except Exception:
                         pass
+                    detail.wait_for_timeout(200)
                 detail.locator('label:has-text("他決")').first.click()
-                detail.wait_for_timeout(300)
+                # 選択状態の反映を100msポーリングで確認
+                for _ in range(15):  # 最大1.5秒
+                    if otsu_radio.is_checked():
+                        break
+                    detail.wait_for_timeout(100)
                 if not otsu_radio.is_checked():
                     raise PWTimeout("他決の選択を確認できませんでした")
             else:
@@ -389,25 +411,28 @@ def _pitat_edit_detail(detail, task: Task) -> str:
 
                 # ★重要: Vueが物件データをバインドする前に入力するとDOMだけ
                 # 書き換わって reactive state は古いままになる（=登録しても保存されない）。
-                # 既存価格が読み込まれる（空でなくなる）まで最大10秒待つ。
-                for _ in range(20):
+                # 既存価格が読み込まれる（空でなくなる）まで200msポーリングで待つ。
+                for _ in range(50):  # 最大10秒
                     if price_input.input_value().strip():
                         break
-                    detail.wait_for_timeout(500)
-                detail.wait_for_timeout(500)  # バインド後の安定化
+                    detail.wait_for_timeout(200)
 
                 # クリック→クリア→1文字ずつtype→Tabでblur。
                 # fill() だとVueのreactive stateに反映されないケースがあるため
-                # type+delay で確実に input/change イベントを発火させる。
+                # type+delay で input/change イベントを発火させる。
                 price_input.click()
                 price_input.fill("")
-                price_input.type(task.new_price, delay=50)
+                price_input.type(task.new_price, delay=20)
                 price_input.press("Tab")
-                detail.wait_for_timeout(500)
 
-                # 入力値が想定通りかDOMで確認（不一致ならリトライへ）
-                entered = re.sub(r"[^\d]", "", str(price_input.input_value()))
+                # 入力値が想定通りに反映されるまで100msポーリングで確認
                 target  = re.sub(r"[^\d]", "", str(task.new_price))
+                entered = ""
+                for _ in range(20):  # 最大2秒
+                    entered = re.sub(r"[^\d]", "", str(price_input.input_value()))
+                    if entered == target:
+                        break
+                    detail.wait_for_timeout(100)
                 if entered != target:
                     raise PWTimeout(
                         f"価格入力の確認NG: 入力={entered} / 目標={target}")
@@ -424,13 +449,18 @@ def _pitat_edit_detail(detail, task: Task) -> str:
     # 登録 → 確認ダイアログ「はい」
     detail.click('button.button-register')
     detail.wait_for_selector('.el-message-box', timeout=10000)
-    detail.wait_for_timeout(300)
-    detail.click('.el-message-box button.el-button--primary')
+    # ダイアログ描画の安定化（100msポーリングで「はい」が押せるまで）
+    primary_btn = detail.locator('.el-message-box button.el-button--primary')
+    for _ in range(10):
+        if primary_btn.count() and primary_btn.is_enabled():
+            break
+        detail.wait_for_timeout(100)
+    primary_btn.click()
 
-    # 完了メッセージ「登録しました。」が出るまでポーリング
+    # 完了メッセージ「登録しました。」が出るまで200msポーリング
     ok = False
-    for _ in range(20):
-        detail.wait_for_timeout(500)
+    for _ in range(50):  # 最大10秒
+        detail.wait_for_timeout(200)
         boxes = detail.locator('.el-message-box__content')
         if boxes.count():
             txt = boxes.first.inner_text()
@@ -440,7 +470,8 @@ def _pitat_edit_detail(detail, task: Task) -> str:
                 if btn.count():
                     btn.click()
                 break
-    detail.wait_for_timeout(500)
+    # ダイアログクローズ後の安定化（短縮）
+    detail.wait_for_timeout(200)
     return "成功" if ok else "成功(完了文言未確認)"
 
 
@@ -464,8 +495,9 @@ def _pitat_one(context, page, task: Task, dry_run: bool) -> str:
     before_pages = len(context.pages)
     logger.info("  詳細ボタンをクリックします...")
     page.locator('button.button-basic:has-text("詳細")').first.click()
-    for _ in range(30):
-        page.wait_for_timeout(500)
+    # 新タブ検出を200msポーリング（最大15秒）。開いたら即進む
+    for _ in range(75):
+        page.wait_for_timeout(200)
         if len(context.pages) > before_pages:
             detail = context.pages[-1]
             logger.info(f"  新タブ検出: {detail.url}")
