@@ -386,8 +386,31 @@ def _pitat_edit_detail(detail, task: Task) -> str:
                 price_input = detail.locator('div.row').filter(
                     has=price_btn).locator('input.text-right').first
                 price_input.wait_for(state="visible", timeout=5000)
-                price_input.fill(task.new_price)
-                detail.wait_for_timeout(300)
+
+                # ★重要: Vueが物件データをバインドする前に入力するとDOMだけ
+                # 書き換わって reactive state は古いままになる（=登録しても保存されない）。
+                # 既存価格が読み込まれる（空でなくなる）まで最大10秒待つ。
+                for _ in range(20):
+                    if price_input.input_value().strip():
+                        break
+                    detail.wait_for_timeout(500)
+                detail.wait_for_timeout(500)  # バインド後の安定化
+
+                # クリック→クリア→1文字ずつtype→Tabでblur。
+                # fill() だとVueのreactive stateに反映されないケースがあるため
+                # type+delay で確実に input/change イベントを発火させる。
+                price_input.click()
+                price_input.fill("")
+                price_input.type(task.new_price, delay=50)
+                price_input.press("Tab")
+                detail.wait_for_timeout(500)
+
+                # 入力値が想定通りかDOMで確認（不一致ならリトライへ）
+                entered = re.sub(r"[^\d]", "", str(price_input.input_value()))
+                target  = re.sub(r"[^\d]", "", str(task.new_price))
+                if entered != target:
+                    raise PWTimeout(
+                        f"価格入力の確認NG: 入力={entered} / 目標={target}")
             edited = True
             break
         except PWTimeout:
