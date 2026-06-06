@@ -85,6 +85,81 @@ def build_tasks(result: dict) -> list[Task]:
 
 
 # ----------------------------------------------------------------
+# 自動ログイン（セッション切れ時のフォールバック）
+# ----------------------------------------------------------------
+
+def _try_auto_login(context, page, site_key: str, site_cfg: dict) -> bool:
+    """
+    現在のページがログイン画面なら、config の認証情報で自動ログインする。
+    成功したら storage_state を保存して True を返す。失敗時 False。
+
+    必要な config 項目:
+      - skyhrs: user_id, password
+      - pitat:  gyosha_code, user_id, password
+    パスワードはログに出力しない。
+    """
+    login_url = site_cfg.get("login_url", "")
+    auth_state_path = BASE_DIR / site_cfg.get("auth_state", f"auth_state_{site_key}.json")
+
+    # 念のため明示的にログインページへ
+    try:
+        page.goto(login_url, wait_until="domcontentloaded", timeout=15000)
+    except Exception:
+        pass
+    page.wait_for_timeout(1500)
+
+    try:
+        if site_key == "skyhrs":
+            user_id  = str(site_cfg.get("user_id", "")).strip()
+            password = str(site_cfg.get("password", "")).strip()
+            if not (user_id and password):
+                logger.error("skyhrs: config.json に user_id / password が無いため自動ログイン不可")
+                return False
+            page.fill('input[name="login_nm"]', user_id)
+            page.fill('input[name="pswd"]', password)
+            # 検索フォームと同様 Tab で change を発火 → submit
+            page.locator('input[name="pswd"]').press("Tab")
+            page.wait_for_timeout(200)
+            page.click('input[type="submit"]')
+            page.wait_for_load_state("domcontentloaded", timeout=15000)
+            page.wait_for_timeout(1500)
+            logger.info(f"skyhrs 自動ログイン試行: id={user_id}")
+
+        elif site_key == "pitat":
+            gyosha_code = str(site_cfg.get("gyosha_code", "")).strip()
+            user_id     = str(site_cfg.get("user_id", "")).strip()
+            password    = str(site_cfg.get("password", "")).strip()
+            if not (gyosha_code and user_id and password):
+                logger.error("pitat: config.json に gyosha_code/user_id/password が無いため自動ログイン不可")
+                return False
+            page.fill('#gyosha_code', gyosha_code)
+            page.fill('#login_id',   user_id)
+            page.fill('#password',   password)
+            page.click('input[type="submit"][name="login"]')
+            page.wait_for_load_state("domcontentloaded", timeout=20000)
+            page.wait_for_timeout(2500)
+            logger.info(f"pitat 自動ログイン試行: gyosha={gyosha_code} / id={user_id}")
+        else:
+            return False
+    except Exception as e:
+        logger.error(f"{site_key} ログイン操作で例外: {e}")
+        return False
+
+    # 成功判定: URLに "login" が含まれていなければOK
+    if "login" in page.url.lower():
+        logger.error(f"{site_key} 自動ログイン失敗（loginページのまま）: {page.url}")
+        return False
+
+    # 新しいセッションを保存
+    try:
+        context.storage_state(path=str(auth_state_path))
+        logger.info(f"{site_key} 自動ログイン成功 → セッション更新: {auth_state_path.name}")
+    except Exception:
+        pass
+    return True
+
+
+# ----------------------------------------------------------------
 # スカイヤーズ（自社物件管理サイト）
 # ----------------------------------------------------------------
 
@@ -106,14 +181,30 @@ def process_skyhrs(context, site_cfg: dict, tasks: list[Task], dry_run: bool,
 
     page.on("dialog", _on_dialog)
 
+    # 開始時にセッション確認。切れていれば自動ログインを試みる
+    page.goto(search_url, wait_until="domcontentloaded")
+    if "login" in page.url.lower():
+        logger.info("skyhrs: セッション切れを検知。自動ログインを試行します…")
+        if _try_auto_login(context, page, "skyhrs", site_cfg):
+            page.goto(search_url, wait_until="domcontentloaded")
+        else:
+            logger.error("skyhrs: 自動ログイン失敗。全タスクをスキップします")
+            for t in tasks:
+                t.results["skyhrs"] = "失敗:セッション切れ(自動ログイン失敗。要login_setup)"
+            page.close()
+            return
+
     for task in tasks:
         key = "skyhrs"
         try:
             page.goto(search_url, wait_until="domcontentloaded")
-            # セッション切れ判定（ログインページに飛ばされていないか）
+            # セッション切れ判定（処理中に再び切れた場合の保険）
             if "login" in page.url.lower():
-                task.results[key] = "失敗:セッション切れ(要login_setup)"
-                continue
+                if _try_auto_login(context, page, "skyhrs", site_cfg):
+                    page.goto(search_url, wait_until="domcontentloaded")
+                else:
+                    task.results[key] = "失敗:セッション切れ(自動ログイン失敗)"
+                    continue
 
             # 管理番号で検索（スカイヤーズは先頭"HF"を除いた数字列で登録されている）
             search_no = re.sub(r"(?i)^hf", "", task.kanri_no).strip()
@@ -382,9 +473,15 @@ def process_pitat(context, site_cfg: dict, tasks: list[Task], dry_run: bool) -> 
         page.goto(home_url, wait_until="domcontentloaded")
         page.wait_for_timeout(2000)
         if "login" in page.url.lower():
-            for t in tasks:
-                t.results["pitat"] = "失敗:セッション切れ(要login_setup)"
-            return
+            logger.info("pitat: セッション切れを検知。自動ログインを試行します…")
+            if _try_auto_login(context, page, "pitat", site_cfg):
+                page.goto(home_url, wait_until="domcontentloaded")
+                page.wait_for_timeout(2000)
+            else:
+                logger.error("pitat: 自動ログイン失敗。全タスクをスキップします")
+                for t in tasks:
+                    t.results["pitat"] = "失敗:セッション切れ(自動ログイン失敗。要login_setup)"
+                return
         page.goto(list_url, wait_until="domcontentloaded")
         try:
             page.wait_for_selector('input[placeholder*="入力"]', timeout=30000)

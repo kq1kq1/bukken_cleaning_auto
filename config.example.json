@@ -25,13 +25,18 @@
     "skyhrs": {
       "login_url":  "https://YOUR-SKYHRS-LOGIN-URL/",
       "search_url": "https://YOUR-SKYHRS-SEARCH-URL/",
-      "auth_state": "auth_state_skyhrs.json"
+      "auth_state": "auth_state_skyhrs.json",
+      "user_id":    "your-login-id",
+      "password":   "your-password"
     },
     "pitat": {
       "login_url": "https://www.pitat-cloud.com/login/",
       "home_url":  "https://buy.pitat-cloud.com/home",
       "list_url":  "https://buy.pitat-cloud.com/bukken/list",
-      "auth_state": "auth_state_pitat.json"
+      "auth_state": "auth_state_pitat.json",
+      "gyosha_code": "your-company-id",
+      "user_id":     "your-login-id",
+      "password":    "your-password"
     }
   }
 }
