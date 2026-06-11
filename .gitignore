@@ -2,6 +2,7 @@
 # ログインセッション（Cookie）
 auth_state_*.json
 # Chrome 永続プロフィール（保存パスワード・Cookie・履歴）
+# 旧方式の残骸を念のため除外。新方式は %LOCALAPPDATA%\bukken_cleaning_chrome を使う
 chrome_profile_*/
 # SMTPパスワード・メールアドレスを含む設定
 config.json

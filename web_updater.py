@@ -568,37 +568,41 @@ def process_pitat(context, site_cfg: dict, tasks: list[Task], dry_run: bool) -> 
 # メイン
 # ----------------------------------------------------------------
 
+CDP_URL = "http://localhost:9222"
+
+
 def run_site(site_key: str, site_cfg: dict, tasks: list[Task],
              dry_run: bool, headless: bool, pause: bool = False) -> None:
     """
-    1サイト分の Chrome を「永続プロフィール」で起動してタスクを処理する。
-    プロフィールには Chrome のパスワード保存が効くので、セッション切れ時は
-    autofill で自動再ログインできる（config に ID/PW を持たない）。
-    """
-    profile_dir = BASE_DIR / f"chrome_profile_{site_key}"
-    if not profile_dir.exists() or not any(profile_dir.iterdir()):
-        logger.error(
-            f"{site_key}: chrome_profile_{site_key} がありません。"
-            f"先に `python login_setup.py {site_key}`（または ログイン設定.bat）を実行してください。"
-        )
-        for t in tasks:
-            t.results[site_key] = "失敗:プロフィール未作成"
-        return
+    1サイト分のタスクを、起動済みの Chrome（CDP）に接続して処理する。
 
+    事前準備:
+      1. start_chrome.bat をダブルクリックして Chrome を起動
+      2. 各サイトに手動ログイン（Chrome がパスワードを保存）
+      3. その Chrome を開きっぱなしにしたまま 実行.bat 等を使う
+
+    Chrome は閉じずに使い回すので、セッションは Chrome 任せ。
+    保存パスワードがあれば autofill で自動再ログインも効く。
+    """
     with sync_playwright() as p:
         try:
-            context = p.chromium.launch_persistent_context(
-                user_data_dir=str(profile_dir),
-                channel="chrome",
-                headless=headless,
-                viewport={"width": 1280, "height": 800},
-                args=["--disable-blink-features=AutomationControlled"],
-            )
+            browser = p.chromium.connect_over_cdp(CDP_URL)
         except Exception as e:
-            logger.error(f"{site_key}: Chrome起動失敗 {e}")
+            logger.error(
+                f"{site_key}: Chrome ({CDP_URL}) に接続できません。"
+                f"start_chrome.bat を実行して Chrome を起動してください。 ({e})"
+            )
             for t in tasks:
-                t.results[site_key] = f"失敗:Chrome起動失敗({e})"
+                t.results[site_key] = "失敗:Chrome未起動(start_chrome.batで起動)"
             return
+
+        contexts = browser.contexts
+        if not contexts:
+            logger.error(f"{site_key}: Chrome にコンテキストがありません")
+            for t in tasks:
+                t.results[site_key] = "失敗:Chromeコンテキスト無し"
+            return
+        context = contexts[0]
 
         try:
             if site_key == "skyhrs":
@@ -606,8 +610,10 @@ def run_site(site_key: str, site_cfg: dict, tasks: list[Task],
             elif site_key == "pitat":
                 process_pitat(context, site_cfg, tasks, dry_run)
         finally:
+            # Chrome 本体は閉じない（ユーザーが使い続けるため）。
+            # 接続だけ切る。
             try:
-                context.close()
+                browser.close()
             except Exception:
                 pass
 
