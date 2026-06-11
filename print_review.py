@@ -27,11 +27,12 @@ BASE_DIR    = Path(__file__).parent
 REPORTS_DIR = BASE_DIR / "reports"
 LOG_PATH    = BASE_DIR / "checker.log"
 
+from logging.handlers import RotatingFileHandler
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
     handlers=[
-        logging.FileHandler(LOG_PATH, encoding="utf-8"),
+        RotatingFileHandler(LOG_PATH, maxBytes=500_000, backupCount=1, encoding="utf-8"),
         logging.StreamHandler(sys.stdout),
     ],
 )

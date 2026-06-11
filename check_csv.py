@@ -32,11 +32,13 @@ LOG_PATH      = BASE_DIR / "checker.log"
 REPORT_DIR    = BASE_DIR / "reports"
 REPORT_DIR.mkdir(exist_ok=True)
 
+from logging.handlers import RotatingFileHandler
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
     handlers=[
-        logging.FileHandler(LOG_PATH, encoding="utf-8"),
+        # ログを 500KB で世代交代、世代は1つだけ保持（無限肥大化防止）
+        RotatingFileHandler(LOG_PATH, maxBytes=500_000, backupCount=1, encoding="utf-8"),
         logging.StreamHandler(sys.stdout),
     ],
 )
@@ -973,19 +975,35 @@ REPORT_KEEP_DAYS = 14
 
 def cleanup_old_reports(keep_days: int = REPORT_KEEP_DAYS) -> int:
     """
-    reports/ 内の古いHTMLレポートを自動削除する（更新日時が keep_days 日より古いもの）。
-    削除した件数を返す。エラーは無視（クリーニング自体で処理を止めない）。
+    自動生成された一時ファイル類を自動削除する（更新日時が keep_days 日より古いもの）。
+
+    対象:
+      reports/report_*.html         照合HTMLレポート
+      reports/print_review_*.html   要確認物件 印刷用HTML
+      reports/print_review_*.pdf    要確認物件 印刷用PDF
+      BASE_DIR/update_results_*.csv 自動更新の個別結果CSV
+      BASE_DIR/debug_*.html         デバッグダンプ（重い）
+      BASE_DIR/debug_*.png          デバッグスクショ
     """
     import time
     cutoff = time.time() - keep_days * 86400
     removed = 0
-    for f in REPORT_DIR.glob("report_*.html"):
-        try:
-            if f.stat().st_mtime < cutoff:
-                f.unlink()
-                removed += 1
-        except Exception:
-            pass
+    patterns = [
+        (REPORT_DIR, "report_*.html"),
+        (REPORT_DIR, "print_review_*.html"),
+        (REPORT_DIR, "print_review_*.pdf"),
+        (BASE_DIR,   "update_results_*.csv"),
+        (BASE_DIR,   "debug_*.html"),
+        (BASE_DIR,   "debug_*.png"),
+    ]
+    for d, pat in patterns:
+        for f in d.glob(pat):
+            try:
+                if f.stat().st_mtime < cutoff:
+                    f.unlink()
+                    removed += 1
+            except Exception:
+                pass
     if removed:
         logger.info(f"古いレポートを削除: {removed}件（{keep_days}日より前）")
     return removed

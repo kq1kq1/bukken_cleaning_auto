@@ -41,11 +41,13 @@ CONFIG_PATH = BASE_DIR / "config.json"
 RESULT_PATH = BASE_DIR / "last_result.json"
 LOG_PATH    = BASE_DIR / "web_updater.log"
 
+from logging.handlers import RotatingFileHandler
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
     handlers=[
-        logging.FileHandler(LOG_PATH, encoding="utf-8"),
+        # ログを 500KB で世代交代、世代1つだけ保持（無限肥大化防止）
+        RotatingFileHandler(LOG_PATH, maxBytes=500_000, backupCount=1, encoding="utf-8"),
         logging.StreamHandler(sys.stdout),
     ],
 )
