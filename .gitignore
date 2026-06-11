@@ -1,6 +1,8 @@
 # --- 機密情報（絶対にコミットしない） ---
 # ログインセッション（Cookie）
 auth_state_*.json
+# Chrome 永続プロフィール（保存パスワード・Cookie・履歴）
+chrome_profile_*/
 # SMTPパスワード・メールアドレスを含む設定
 config.json
 

@@ -90,72 +90,73 @@ def build_tasks(result: dict) -> list[Task]:
 
 def _try_auto_login(context, page, site_key: str, site_cfg: dict) -> bool:
     """
-    現在のページがログイン画面なら、config の認証情報で自動ログインする。
-    成功したら storage_state を保存して True を返す。失敗時 False。
+    現在のページがログイン画面なら、Chromeに保存されたパスワードによる
+    autofill を使ってログインを完了させる。
 
-    必要な config 項目:
-      - skyhrs: user_id, password
-      - pitat:  gyosha_code, user_id, password
-    パスワードはログに出力しない。
+    流れ:
+      1. ログインURLへ移動
+      2. ID/PW フィールドにフォーカス → Chrome が保存パスワードを autofill
+      3. autofill された値がフィールドに入っているか確認
+      4. 入っていれば送信ボタンをクリック
+      5. ログインページから抜けたら成功
+
+    config.json に ID/PW を持たない（chrome_profile_* で完結する設計）。
     """
     login_url = site_cfg.get("login_url", "")
-    auth_state_path = BASE_DIR / site_cfg.get("auth_state", f"auth_state_{site_key}.json")
-
-    # 念のため明示的にログインページへ
     try:
         page.goto(login_url, wait_until="domcontentloaded", timeout=15000)
     except Exception:
         pass
-    page.wait_for_timeout(1500)
+    page.wait_for_timeout(2500)  # Chrome autofill のロード待ち
+
+    if site_key == "skyhrs":
+        id_sel     = 'input[name="login_nm"]'
+        pw_sel     = 'input[name="pswd"]'
+        submit_sel = 'input[type="submit"]'
+    elif site_key == "pitat":
+        id_sel     = '#login_id'
+        pw_sel     = '#password'
+        submit_sel = 'input[type="submit"][name="login"]'
+    else:
+        return False
 
     try:
-        if site_key == "skyhrs":
-            user_id  = str(site_cfg.get("user_id", "")).strip()
-            password = str(site_cfg.get("password", "")).strip()
-            if not (user_id and password):
-                logger.error("skyhrs: config.json に user_id / password が無いため自動ログイン不可")
-                return False
-            page.fill('input[name="login_nm"]', user_id)
-            page.fill('input[name="pswd"]', password)
-            # 検索フォームと同様 Tab で change を発火 → submit
-            page.locator('input[name="pswd"]').press("Tab")
-            page.wait_for_timeout(200)
-            page.click('input[type="submit"]')
-            page.wait_for_load_state("domcontentloaded", timeout=15000)
-            page.wait_for_timeout(1500)
-            logger.info(f"skyhrs 自動ログイン試行: id={user_id}")
+        # autofill のトリガー: 各フィールドにフォーカスする
+        page.click(id_sel)
+        page.wait_for_timeout(500)
+        page.click(pw_sel)
+        page.wait_for_timeout(1000)
 
-        elif site_key == "pitat":
-            gyosha_code = str(site_cfg.get("gyosha_code", "")).strip()
-            user_id     = str(site_cfg.get("user_id", "")).strip()
-            password    = str(site_cfg.get("password", "")).strip()
-            if not (gyosha_code and user_id and password):
-                logger.error("pitat: config.json に gyosha_code/user_id/password が無いため自動ログイン不可")
-                return False
-            page.fill('#gyosha_code', gyosha_code)
-            page.fill('#login_id',   user_id)
-            page.fill('#password',   password)
-            page.click('input[type="submit"][name="login"]')
-            page.wait_for_load_state("domcontentloaded", timeout=20000)
-            page.wait_for_timeout(2500)
-            logger.info(f"pitat 自動ログイン試行: gyosha={gyosha_code} / id={user_id}")
-        else:
+        # 値が入ったか確認（200msポーリング、最大3秒）
+        id_val = pw_val = ""
+        for _ in range(15):
+            id_val = page.locator(id_sel).input_value().strip()
+            pw_val = page.locator(pw_sel).input_value().strip()
+            if id_val and pw_val:
+                break
+            page.wait_for_timeout(200)
+
+        if not (id_val and pw_val):
+            logger.error(
+                f"{site_key}: Chrome autofill されませんでした。"
+                f"このサイトのパスワードを Chrome に保存しているか確認してください。"
+                f"未保存なら ログイン設定.bat で手動ログインしパスワード保存してください。"
+            )
             return False
+
+        logger.info(f"{site_key} 自動ログイン: autofill 検出、送信します")
+        page.click(submit_sel)
+        page.wait_for_load_state("domcontentloaded", timeout=20000)
+        page.wait_for_timeout(2000)
     except Exception as e:
         logger.error(f"{site_key} ログイン操作で例外: {e}")
         return False
 
-    # 成功判定: URLに "login" が含まれていなければOK
     if "login" in page.url.lower():
         logger.error(f"{site_key} 自動ログイン失敗（loginページのまま）: {page.url}")
         return False
 
-    # 新しいセッションを保存
-    try:
-        context.storage_state(path=str(auth_state_path))
-        logger.info(f"{site_key} 自動ログイン成功 → セッション更新: {auth_state_path.name}")
-    except Exception:
-        pass
+    logger.info(f"{site_key} 自動ログイン成功")
     return True
 
 
@@ -569,22 +570,46 @@ def process_pitat(context, site_cfg: dict, tasks: list[Task], dry_run: bool) -> 
 
 def run_site(site_key: str, site_cfg: dict, tasks: list[Task],
              dry_run: bool, headless: bool, pause: bool = False) -> None:
-    """1サイト分のブラウザを起動してタスクを処理する。"""
-    auth_state = BASE_DIR / site_cfg["auth_state"]
-    if not auth_state.exists():
-        logger.error(f"{site_key}: セッション未保存。先に `python login_setup.py {site_key}` を実行してください。")
+    """
+    1サイト分の Chrome を「永続プロフィール」で起動してタスクを処理する。
+    プロフィールには Chrome のパスワード保存が効くので、セッション切れ時は
+    autofill で自動再ログインできる（config に ID/PW を持たない）。
+    """
+    profile_dir = BASE_DIR / f"chrome_profile_{site_key}"
+    if not profile_dir.exists() or not any(profile_dir.iterdir()):
+        logger.error(
+            f"{site_key}: chrome_profile_{site_key} がありません。"
+            f"先に `python login_setup.py {site_key}`（または ログイン設定.bat）を実行してください。"
+        )
         for t in tasks:
-            t.results[site_key] = "失敗:セッション未保存"
+            t.results[site_key] = "失敗:プロフィール未作成"
         return
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=headless)
-        context = browser.new_context(storage_state=str(auth_state))
-        if site_key == "skyhrs":
-            process_skyhrs(context, site_cfg, tasks, dry_run, pause=pause)
-        elif site_key == "pitat":
-            process_pitat(context, site_cfg, tasks, dry_run)
-        browser.close()
+        try:
+            context = p.chromium.launch_persistent_context(
+                user_data_dir=str(profile_dir),
+                channel="chrome",
+                headless=headless,
+                viewport={"width": 1280, "height": 800},
+                args=["--disable-blink-features=AutomationControlled"],
+            )
+        except Exception as e:
+            logger.error(f"{site_key}: Chrome起動失敗 {e}")
+            for t in tasks:
+                t.results[site_key] = f"失敗:Chrome起動失敗({e})"
+            return
+
+        try:
+            if site_key == "skyhrs":
+                process_skyhrs(context, site_cfg, tasks, dry_run, pause=pause)
+            elif site_key == "pitat":
+                process_pitat(context, site_cfg, tasks, dry_run)
+        finally:
+            try:
+                context.close()
+            except Exception:
+                pass
 
 
 def print_summary(tasks: list[Task], sites: list[str]) -> None:
