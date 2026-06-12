@@ -221,7 +221,9 @@ class ReviewApp:
             wu.Task(
                 kanri_no=str(it.get("物件管理番号", "")).strip(),
                 action=it.get("action", ""),
-                new_price=str(it.get("csv_価格", "")).strip(),
+                # 新価格 = DB側=REINSの新価格（CSV側=現サイト価格は旧値）
+                # web_updater.build_tasks と方向を統一
+                new_price=str(it.get("db_価格", "")).strip(),
                 info=it,
             )
             for it in sel
