@@ -31,3 +31,6 @@ venv/
 # --- OS ---
 Thumbs.db
 .DS_Store
+
+# 実際の物件で作った照合事例（REINSデータを含むため公開リポジトリに上げない）
+tests/cases_local/

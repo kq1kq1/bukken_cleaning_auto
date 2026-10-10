@@ -14,10 +14,9 @@ from pathlib import Path
 from datetime import datetime
 from difflib import SequenceMatcher
 from collections import defaultdict
+from typing import NamedTuple
 
 import pandas as pd
-import tkinter as tk
-from tkinter import filedialog, messagebox
 
 from mailer import send_email, build_check_email
 
@@ -767,19 +766,67 @@ def load_config() -> dict:
     return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
 
 
-def load_reins_db(cfg: dict) -> tuple[list[dict], list[dict]]:
-    """REINS物件DBを読み込み、(物件DB, 成約・取消) のレコードリストを返す。
+# 照合で使う REINS 側の列。reins_auto 側で列名が変わると照合が黙って
+# 外れるため、読み込み時に必ず確認する。
+REQUIRED_DB_COLUMNS = (
+    "物件種別", "所在地", "建物名", "所在階", "価格", "会社名", "取引態様",
+    "沿線駅", "交通", "土地面積", "建物面積", "専有面積", "状態",
+)
+DB_STATUSES = ("アクティブ", "取消候補")
+# REINSデータがこれより古ければ、照合結果を使う前に確認する（日）
+DB_MAX_AGE_DAYS = 3
+
+
+class ReinsDb(NamedTuple):
+    """照合に使う REINS 物件DB。"""
+    records:  list[dict]   # 物件DB（アクティブ／取消候補）
+    archive:  list[dict]   # 成約・取消
+    saved_at: datetime     # reins_auto が最後に保存した日時
+
+
+def load_reins_db(cfg: dict) -> ReinsDb:
+    """REINS物件DBを読み込む。
 
     config.json に postgres.dsn があれば Supabase から、無ければ従来の
-    reins_db.xlsx（db_path）から読む。
+    reins_db.xlsx（db_path）から読む。照合に使える中身かどうかも確認する。
     """
     pg = cfg.get("postgres") or {}
     if pg.get("dsn"):
-        return _load_db_from_supabase(pg)
-    return _load_db_from_excel(cfg["db_path"])
+        db = _load_db_from_supabase(pg)
+    else:
+        db = _load_db_from_excel(cfg["db_path"])
+    validate_reins_db(db)
+    return db
 
 
-def _load_db_from_supabase(pg: dict) -> tuple[list[dict], list[dict]]:
+def validate_reins_db(db: ReinsDb) -> None:
+    """照合に必要な列・状態がそろっているか確認し、おかしければ ValueError で止める。
+
+    reins_auto 側の変更（列名や状態名の変更など）で、照合が黙って
+    外れるのを防ぐため。
+    """
+    if not db.records:
+        raise ValueError("REINS物件DBが空です（reins_auto の保存状況を確認してください）")
+
+    missing = [c for c in REQUIRED_DB_COLUMNS if c not in db.records[0]]
+    if db.archive and "成約・取消日" not in db.archive[0]:
+        missing.append("成約・取消日")
+    if missing:
+        raise ValueError(
+            f"REINS物件DBに照合で使う列がありません: {', '.join(missing)}\n"
+            f"reins_auto 側で列名が変わった可能性があります。"
+        )
+
+    unknown = {r.get("状態", "") for r in db.records} - set(DB_STATUSES)
+    if unknown:
+        names = ", ".join(s or "（空欄）" for s in sorted(unknown))
+        raise ValueError(
+            f"REINS物件DBに想定外の「状態」があります: {names}\n"
+            f"reins_auto 側で状態の名前が変わった可能性があります。"
+        )
+
+
+def _load_db_from_supabase(pg: dict) -> ReinsDb:
     """reins_auto が Supabase に保存した物件DBを読む（読み取り専用）。
 
     reins_auto は保存のたびに全件を UPSERT するので、最後の保存で書かれた行
@@ -807,13 +854,13 @@ def _load_db_from_supabase(pg: dict) -> tuple[list[dict], list[dict]]:
         rec = {k: ("" if v is None else str(v)) for k, v in (raw or {}).items()}
         (archive_records if status == "成約・取消" else db_records).append(rec)
 
-    saved_at = rows[0][2].astimezone()
+    saved_at = rows[0][2].astimezone().replace(tzinfo=None)   # 日本時間に
     logger.info(f"DB読み込み元: Supabase（reins_auto の最終保存 {saved_at:%Y-%m-%d %H:%M}）")
-    return db_records, archive_records
+    return ReinsDb(db_records, archive_records, saved_at)
 
 
-def _load_db_from_excel(db_path: str) -> tuple[list[dict], list[dict]]:
-    """従来の reins_db.xlsx を読む。"""
+def _load_db_from_excel(db_path: str) -> ReinsDb:
+    """従来の reins_db.xlsx を読む。保存日時はファイルの更新日時。"""
     xl = pd.ExcelFile(db_path)
     db_df = pd.read_excel(xl, sheet_name="物件DB", dtype=str).fillna("")
     archive_records: list[dict] = []
@@ -821,7 +868,8 @@ def _load_db_from_excel(db_path: str) -> tuple[list[dict], list[dict]]:
         arch_df = pd.read_excel(xl, sheet_name="成約・取消", dtype=str).fillna("")
         archive_records = arch_df.to_dict("records")
     logger.info(f"DB読み込み元: {db_path}")
-    return db_df.to_dict("records"), archive_records
+    saved_at = datetime.fromtimestamp(Path(db_path).stat().st_mtime)
+    return ReinsDb(db_df.to_dict("records"), archive_records, saved_at)
 
 
 def load_column_map() -> dict:
@@ -887,7 +935,8 @@ def compare(csv_path: str, cfg: dict) -> dict:
         logger.warning(f"マッピング未検出の重要フィールド: {unmapped}")
 
     # ── DB読み込み + インデックス構築 ─────────────────────────
-    db_records, archive_records = load_reins_db(cfg)
+    db = load_reins_db(cfg)
+    db_records, archive_records = db.records, db.archive
     db_index   = build_db_index(db_records)
 
     archive_index: dict[tuple, list[dict]] = defaultdict(list)
@@ -1009,6 +1058,7 @@ def compare(csv_path: str, cfg: dict) -> dict:
         "confirmed_sold":  confirmed_sold,
         "total_csv":       len(csv_df),
         "total_db":        len(db_records),
+        "db_saved_at":     db.saved_at,
         "unmapped_fields": unmapped,
         "csv_cols":        csv_cols,
         "cmap":            cmap,
@@ -1231,6 +1281,10 @@ def save_result_json(result: dict, csv_path: str) -> Path:
 # ----------------------------------------------------------------
 
 def main() -> None:
+    # GUIはここでだけ使う（照合ロジックは tkinter なしで読み込めるようにしておく）
+    import tkinter as tk
+    from tkinter import filedialog, messagebox
+
     root = tk.Tk()
     root.withdraw()
 
@@ -1262,6 +1316,23 @@ def main() -> None:
         logger.exception("照合中にエラーが発生しました")
         messagebox.showerror("エラー", f"照合中にエラーが発生しました:\n{e}")
         return
+
+    # REINSのデータが古すぎないか（reins_auto の保存が Supabase に届いていない等）。
+    # 古いデータで照合すると、サイトを古い価格に戻してしまうおそれがある
+    saved_at = result["db_saved_at"]
+    age_days = (datetime.now() - saved_at).total_seconds() / 86400
+    max_age  = cfg.get("matching", {}).get("db_max_age_days", DB_MAX_AGE_DAYS)
+    if age_days > max_age:
+        logger.warning(f"REINSデータが古い: {saved_at:%Y-%m-%d %H:%M}（約{age_days:.1f}日前）")
+        if not messagebox.askyesno(
+            "REINSのデータが古い可能性があります",
+            f"照合に使ったREINSのデータは {saved_at:%m/%d %H:%M} 時点のもの"
+            f"（約{age_days:.0f}日前）です。\n"
+            f"reins_auto の保存が Supabase に届いていない可能性があります。\n\n"
+            f"このまま照合結果を保存・メール送信しますか？",
+        ):
+            messagebox.showinfo("中止", "照合結果は保存していません。\nreins_auto の実行状況を確認してください。")
+            return
 
     # WEB自動更新ツール用に結果をJSON保存
     try:
