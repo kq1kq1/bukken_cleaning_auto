@@ -1,4 +1,8 @@
 {
+  "postgres": {
+    "dsn": "postgresql://reins_app.<プロジェクトID>:<パスワード>@aws-0-ap-northeast-1.pooler.supabase.com:5432/postgres",
+    "schema": "reins"
+  },
   "db_path": "C:/path/to/reins_db.xlsx",
 
   "matching": {

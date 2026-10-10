@@ -30,7 +30,7 @@
 
 - OS: Windows
 - Python: 3.13（標準インストーラ。`tkinter` 同梱版）
-- 主要ライブラリ: pandas / openpyxl / playwright（`requirements.txt` 参照）
+- 主要ライブラリ: pandas / openpyxl / playwright / psycopg（`requirements.txt` 参照）
 
 ---
 
@@ -66,7 +66,8 @@ copy config.example.json config.json
 
 | 項目 | 内容 |
 |---|---|
-| `db_path` | reins_db.xlsx のフルパス（後述） |
+| `postgres.dsn` | REINS物件DB（Supabase）の接続文字列。`reins_auto` の config.json の `postgres.dsn` と同じもの（後述） |
+| `db_path` | 旧方式の reins_db.xlsx のフルパス。`postgres.dsn` が空のときだけ使う |
 | `notification.email_from` | 送信元 Gmail アドレス |
 | `notification.email_to` | 通知先メール（配列で複数可） |
 | `notification.smtp_password` | **Gmailアプリパスワード**（通常のログインPWではない。Googleアカウントで2段階認証→アプリパスワードを発行） |
@@ -76,15 +77,18 @@ copy config.example.json config.json
 
 > `config.json` と `auth_state_*.json` は **機密情報のため `.gitignore` で除外**されています（GitHubには上がりません）。
 
-### 6. reins_db.xlsx を用意（別プロジェクト依存）
-DB照合の元データ `reins_db.xlsx` は、**別プロジェクト `reins_auto`（半自動クリーニング）が生成**します。
-新マシンでは:
-1. `reins_auto` 側もセットアップして `reins_db.xlsx` を生成できる状態にする
-2. 生成された `reins_db.xlsx` のパスを `config.json` の `db_path` に設定する
+### 6. REINS物件DB（Supabase）に接続（別プロジェクト依存）
+DB照合の元データは、**別プロジェクト `reins_auto`（半自動クリーニング）が作る物件DB**です。
+`reins_auto` はスプレッドシートに保存し、同じ内容を Supabase にも写しています。
+本ツールはその **Supabase から読み取り専用で**読みます（書き込みはしません）。
 
-`reins_db.xlsx` には2シートが必要です:
-- `物件DB`（現在掲載中の物件。列: 建物名 / 所在地 / 価格 / 会社名 / 物件種別 / 沿線駅 / 交通 / 取引態様 / 所在階 / 各面積 など）
-- `成約・取消`（成約/取消済み。上記＋`成約・取消日`）
+新マシンでは `reins_auto` の config.json にある `postgres.dsn` を、本ツールの
+config.json の `postgres.dsn` にそのままコピーするだけです。
+
+- 読むのは **reins_auto の最後の保存で書かれた行だけ**です。物件番号変更などでスプシから
+  消えた物件は Supabase に古いまま残るため、それを照合に混ぜないようにしています。
+- 照合時に `checker.log` に「reins_auto の最終保存 日時」が出ます。週次クリーニングの直後か確認してください。
+- `postgres.dsn` を空にすると、旧方式の `reins_db.xlsx`（`db_path`）から読みます。
 
 ### 7. Chrome起動＆ログイン（CDP方式）
 WEB操作は **既に起動済みのChrome** に Playwright がつなぐ方式です（CDP接続）。
@@ -167,7 +171,7 @@ CSVの列名が自動検出できない場合、`column_map.json` の右辺をCS
 ## 注意・既知の制約
 
 - **CSVは手入力**のため、建物名・住所・最寄駅・会社名にゆらぎが出ます。照合は表記ゆれ（漢数字・記号・カタカナ↔英字・法人格・営業所名など）を吸収していますが、最終的にGUIの目視確認で担保します。
-- **reins_db.xlsx の精度に依存**します。`reins_auto` が誤って成約確定にすると、本ツールが「実際は売れていない物件」を成約処理してしまうリスクがあります。→ GUIでの確認が最後の防波堤です。
+- **REINS物件DB の精度に依存**します。`reins_auto` が誤って成約確定にすると、本ツールが「実際は売れていない物件」を成約処理してしまうリスクがあります。→ GUIでの確認が最後の防波堤です。
 - スカイヤーズの検索で**複数件ヒット**した場合は、表示された全件をまとめて更新します（同一物件の重複掲載対策）。結果メールの「⚠️要確認」に明記されます。
 - 既に目標状態（既に成約／既に新価格）の物件は更新せずスキップします（再実行しても安全）。
 - **処理時間の目安**: 自動更新は1件ずつ直列で処理します。特にピタクラはページのロードが遅く、1件あたり数秒〜十数秒かかります。**対象が100件を超える日は、2サイト合わせて30〜40分程度**かかることがあります（途中でブラウザを閉じないでください）。件数が多い日は時間に余裕を持って実行してください。
@@ -196,4 +200,4 @@ CSVの列名が自動検出できない場合、`column_map.json` の右辺をCS
 
 ## 関連プロジェクト
 
-- **reins_auto**: REINSから物件DB（`reins_db.xlsx`）を生成する半自動クリーニング。本ツールの入力元。
+- **reins_auto**: REINSから物件DB（スプレッドシート＋Supabase）を作る半自動クリーニング。本ツールの入力元。

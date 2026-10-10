@@ -767,6 +767,63 @@ def load_config() -> dict:
     return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
 
 
+def load_reins_db(cfg: dict) -> tuple[list[dict], list[dict]]:
+    """REINS物件DBを読み込み、(物件DB, 成約・取消) のレコードリストを返す。
+
+    config.json に postgres.dsn があれば Supabase から、無ければ従来の
+    reins_db.xlsx（db_path）から読む。
+    """
+    pg = cfg.get("postgres") or {}
+    if pg.get("dsn"):
+        return _load_db_from_supabase(pg)
+    return _load_db_from_excel(cfg["db_path"])
+
+
+def _load_db_from_supabase(pg: dict) -> tuple[list[dict], list[dict]]:
+    """reins_auto が Supabase に保存した物件DBを読む（読み取り専用）。
+
+    reins_auto は保存のたびに全件を UPSERT するので、最後の保存で書かれた行
+    （updated_at が最大の行）＝ 今のスプレッドシートの中身になる。
+    物件番号変更などでスプシから消えた物件は、古い updated_at のまま
+    Supabase に残り続けるため、それ以外の行は読まない。
+    """
+    import psycopg
+
+    schema = pg.get("schema", "reins")
+    with psycopg.connect(pg["dsn"], connect_timeout=pg.get("timeout", 20)) as conn:
+        conn.read_only = True   # 照合は読むだけ。万一にも書き込まない
+        with conn.cursor() as cur:
+            cur.execute(
+                f"select status, raw, updated_at from {schema}.properties "
+                f"where updated_at = (select max(updated_at) from {schema}.properties)"
+            )
+            rows = cur.fetchall()
+    if not rows:
+        raise ValueError("Supabase に物件データがありません（reins_auto の保存状況を確認してください）")
+
+    # raw はスプシの全列を原文のまま持っているので、xlsx と同じ形のレコードになる
+    db_records, archive_records = [], []
+    for status, raw, _ in rows:
+        rec = {k: ("" if v is None else str(v)) for k, v in (raw or {}).items()}
+        (archive_records if status == "成約・取消" else db_records).append(rec)
+
+    saved_at = rows[0][2].astimezone()
+    logger.info(f"DB読み込み元: Supabase（reins_auto の最終保存 {saved_at:%Y-%m-%d %H:%M}）")
+    return db_records, archive_records
+
+
+def _load_db_from_excel(db_path: str) -> tuple[list[dict], list[dict]]:
+    """従来の reins_db.xlsx を読む。"""
+    xl = pd.ExcelFile(db_path)
+    db_df = pd.read_excel(xl, sheet_name="物件DB", dtype=str).fillna("")
+    archive_records: list[dict] = []
+    if "成約・取消" in xl.sheet_names:
+        arch_df = pd.read_excel(xl, sheet_name="成約・取消", dtype=str).fillna("")
+        archive_records = arch_df.to_dict("records")
+    logger.info(f"DB読み込み元: {db_path}")
+    return db_df.to_dict("records"), archive_records
+
+
 def load_column_map() -> dict:
     if not COL_MAP_PATH.exists():
         return {}
@@ -802,7 +859,6 @@ def compare(csv_path: str, cfg: dict) -> dict:
       2. 各CSV行を種別+住所でDB候補に絞り込み → O(1) lookup
       3. 候補内でルールベースマッチ（建物名/面積/所在階など） → O(k), k≪DB件数
     """
-    db_path    = cfg["db_path"]
     price_tol  = cfg.get("matching", {}).get("price_diff_tolerance_man", 1)
     # 成約確定の対象にする「成約・取消日」の新しさ（実行日から何日以内か）。
     # 週1回の作業のため、古い成約記録は誤判定の元になるので既定10日。
@@ -831,20 +887,14 @@ def compare(csv_path: str, cfg: dict) -> dict:
         logger.warning(f"マッピング未検出の重要フィールド: {unmapped}")
 
     # ── DB読み込み + インデックス構築 ─────────────────────────
-    xl = pd.ExcelFile(db_path)
-    db_df = pd.read_excel(xl, sheet_name="物件DB", dtype=str).fillna("")
-    db_records = db_df.to_dict("records")
+    db_records, archive_records = load_reins_db(cfg)
     db_index   = build_db_index(db_records)
 
-    archive_records: list[dict] = []
     archive_index: dict[tuple, list[dict]] = defaultdict(list)
-    if "成約・取消" in xl.sheet_names:
-        arch_df = pd.read_excel(xl, sheet_name="成約・取消", dtype=str).fillna("")
-        archive_records = arch_df.to_dict("records")
-        for row in archive_records:
-            tg = type_group(row.get("物件種別", ""))
-            ak = addr_key(row.get("所在地", ""))
-            archive_index[(tg, ak)].append(row)
+    for row in archive_records:
+        tg = type_group(row.get("物件種別", ""))
+        ak = addr_key(row.get("所在地", ""))
+        archive_index[(tg, ak)].append(row)
 
     logger.info(f"DB: 物件DB={len(db_records)}件 / 成約・取消={len(archive_records)}件")
 
